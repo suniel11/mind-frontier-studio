@@ -1,0 +1,51 @@
+{
+  "mission_id": "orion-ce970a7bdc",
+  "objective": "philosphy",
+  "created_at": "2026-07-11T07:57:01.904663+00:00",
+  "updated_at": "2026-07-11T08:04:57.670909+00:00",
+  "status": "running",
+  "target_seconds": 45,
+  "items": [
+    {
+      "title": "Why Comfort Makes You Restless",
+      "prompt": "Create a cinematic 45-second documentary about why a life built only around comfort can create boredom, restlessness, and loss of meaning. Use a consistent protagonist, repetitive spaces, symbolic routine, natural lighting, short captions, and end with the value of meaningful difficulty.",
+      "category": "philosophy",
+      "score": 79,
+      "verdict": "MAKE IT",
+      "reasons": [
+        "The framing creates a clear curiosity gap.",
+        "The topic strongly matches Mind Frontier's psychology audience.",
+        "The topic fits the channel's philosophy positioning."
+      ],
+      "suggested_angle": "Create a cinematic 45-second documentary about why a life built only around comfort can create boredom, restlessness, and loss of meaning. Use a consistent protagonist, repetitive spaces, symbolic routine, natural lighting, short captions, and end with the value of meaningful difficulty.",
+      "target_seconds": 45,
+      "status": "planned",
+      "project_id": null,
+      "error": null
+    },
+    {
+      "title": "Why You Keep Waiting to Feel Ready",
+      "prompt": "Create a cinematic 45-second documentary about why people wait for confidence before beginning, even though confidence usually comes after action. Use a consistent protagonist, unfinished work, clocks, empty spaces, short captions, and end with: readiness is created by beginning.",
+      "category": "self-improvement",
+      "score": 77,
+      "verdict": "GOOD WITH REFINEMENT",
+      "reasons": [
+        "The framing creates a clear curiosity gap.",
+        "The topic strongly matches Mind Frontier's psychology audience.",
+        "The prompt is dense and may reduce creative focus."
+      ],
+      "suggested_angle": "Why create a cinematic 45-second documentary about why people wait for confidence before beginning, even though confidence usually comes after action. use quietly shapes the way people see themselves",
+      "target_seconds": 45,
+      "status": "complete",
+      "project_id": "1783756769-create-a-cinematic-45-second-documentary-about-why-people-wa",
+      "error": null,
+      "video_url": "/projects/1783756769-create-a-cinematic-45-second-documentary-about-why-people-wa/mind-frontier-short.mp4"
+    }
+  ],
+  "atlas_recommendations": [
+    "Enter YouTube metrics for more published Shorts before treating topic recommendations as evidence-based.",
+    "Publish or review 11 high-quality projects that are not yet marked as published.",
+    "The library has no Atlas-classified history project; consider adding one to improve channel variety."
+  ],
+  "published_sample_size": 0
+}

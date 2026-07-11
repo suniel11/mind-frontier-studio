@@ -1,13 +1,13 @@
 {
   "preferred_motions": [
     "dolly_in",
-    "pan_right",
-    "dolly_out",
     "cinematic_push",
     "slow_pan_right",
     "parallax_left",
     "drift",
-    "cinematic_pull"
+    "cinematic_pull",
+    "micro_push",
+    "pan_right"
   ],
   "preferred_visual_types": [
     "character_action",
@@ -16,6 +16,6 @@
     "environmental_hero"
   ],
   "minimum_quality_score": 85,
-  "samples": 11,
-  "average_quality_score": 91.9
+  "samples": 13,
+  "average_quality_score": 91.7
 }
