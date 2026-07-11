@@ -10,7 +10,7 @@ class Settings:
     projects_dir: Path
     static_dir: Path
     app_name: str = "Mind Frontier Studio"
-    version: str = "18.0.0-stable"
+    version: str = "17.0.0-apollo"
 
 
 ROOT = Path(__file__).resolve().parents[2]

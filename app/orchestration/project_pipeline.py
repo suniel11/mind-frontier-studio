@@ -3,20 +3,21 @@ from __future__ import annotations
 import json
 
 from app.agents import character, research, script, storyboard, seo
-from app.core.settings import settings
-from app.director.engine import apply_director_engine
 from app.cinema.director import apply_cinematic_direction
 from app.cinema.report import save_cinema_report
+from app.core.settings import settings
+from app.director.engine import apply_director_engine
 from app.learning.memory import record_project
 from app.learning.profile import load_studio_profile, save_studio_profile
 from app.models import ProjectOutput, ProjectRequest
 from app.narrative.beats import apply_narrative_beats
 from app.narrative.report import save_beat_map
+from app.operations.telemetry import PipelineTelemetry
 from app.producer.review import review_script
 from app.producer_ai.reviewer import assess_topic
 from app.production.pipeline import compile_storyboard_prompts
-from app.publishing.manifest import write_release_manifest
 from app.publishing.assistant import build_publish_package
+from app.publishing.manifest import write_release_manifest
 from app.publishing.presets import get_channel_preset
 from app.publishing.release import build_release_package
 from app.publishing.thumbnail import choose_thumbnail_source, create_thumbnail
@@ -27,144 +28,168 @@ from app.visual.pipeline import apply_visual_storytelling
 
 
 def create_project_pipeline(request: ProjectRequest) -> ProjectOutput:
-    preflight = assess_topic(settings.root, request.topic)
-    if preflight.overall_score < 35:
-        raise RuntimeError(
-            f"AI Producer rejected this topic before production: {preflight.verdict}. "
-            f"Suggested angle: {preflight.suggested_angle}"
-        )
-
-    research_result = research.run(request.topic)
-
-    script_result = script.run(
-        request.topic,
-        research_result,
-        request.target_seconds,
-    )
-
-    producer_result = review_script(script_result)
-    if not producer_result.approved:
-        raise RuntimeError(
-            "Producer review rejected the script: "
-            + " ".join(producer_result.notes)
-        )
-
-    character_result = character.run(script_result)
-
-    storyboard_result = storyboard.run(
-        script_result,
-        request.target_seconds,
-        character_result,
-    )
-
-    storyboard_result, narrative_beats = apply_narrative_beats(
-        storyboard_result,
-        request.target_seconds,
-    )
-
-    studio_profile = load_studio_profile(settings.root)
-    storyboard_result, _director_plan = apply_director_engine(
-        storyboard_result,
-        studio_profile=studio_profile,
-    )
-
-    storyboard_result, _shot_plan = apply_visual_storytelling(
-        storyboard_result,
-        settings.root,
-        style_name="documentary",
-    )
-
-    storyboard_result, cinema_report = apply_cinematic_direction(
-        storyboard_result,
-    )
-
-    storyboard_result = compile_storyboard_prompts(
-        storyboard_result,
-        settings.root,
-        character_bible=character_result,
-        style_name="documentary",
-    )
-
-    seo_result = seo.run(script_result)
-
     project_id = make_project_id(request.topic)
-    output = ProjectOutput(
-        project_id=project_id,
-        topic=request.topic,
-        research=research_result,
-        script=script_result,
-        storyboard=storyboard_result,
-        character_bible=character_result,
-        seo=seo_result,
-    )
+    telemetry = PipelineTelemetry(settings.root, project_id)
+    project_dir = None
+    success = False
 
-    project_dir = save_project(output)
-    save_beat_map(project_dir, narrative_beats)
+    try:
+        with telemetry.stage("producer_preflight"):
+            preflight = assess_topic(settings.root, request.topic)
+            if preflight.overall_score < 35:
+                raise RuntimeError(
+                    "AI Producer rejected this topic before production: "
+                    f"{preflight.verdict}. "
+                    f"Suggested angle: {preflight.suggested_angle}"
+                )
 
-    save_cinema_report(project_dir, cinema_report)
+        with telemetry.stage("research"):
+            research_result = research.run(request.topic)
 
-    video_path = build_video(
-        project_dir,
-        script_result,
-        storyboard_result,
-    )
-    output.video_url = f"/projects/{project_id}/{video_path.name}"
+        with telemetry.stage("script"):
+            script_result = script.run(
+                request.topic,
+                research_result,
+                request.target_seconds,
+            )
 
-    quality_result = inspect_project(
-        script=script_result,
-        storyboard=storyboard_result,
-        character_bible=character_result,
-    )
+        with telemetry.stage("producer_review"):
+            producer_result = review_script(script_result)
+            if not producer_result.approved:
+                raise RuntimeError(
+                    "Producer review rejected the script: "
+                    + " ".join(producer_result.notes)
+                )
 
-    quality_report_path = project_dir / "quality-report.json"
-    quality_report_path.write_text(
-        json.dumps(quality_result.model_dump(), indent=2),
-        encoding="utf-8",
-    )
+        with telemetry.stage("character"):
+            character_result = character.run(script_result)
 
-    thumbnail_source = choose_thumbnail_source(project_dir / "media")
-    thumbnail_path = project_dir / "thumbnail.jpg"
-    create_thumbnail(
-        source_image=thumbnail_source,
-        title=script_result.title,
-        output_path=thumbnail_path,
-    )
+        with telemetry.stage("storyboard"):
+            storyboard_result = storyboard.run(
+                script_result,
+                request.target_seconds,
+                character_result,
+            )
 
-    build_release_package(
-        project_dir=project_dir,
-        output=output,
-        quality_report=quality_result,
-        video_path=video_path,
-        thumbnail_path=thumbnail_path,
-    )
+        with telemetry.stage("narrative_beats"):
+            storyboard_result, narrative_beats = apply_narrative_beats(
+                storyboard_result,
+                request.target_seconds,
+            )
 
-    write_release_manifest(
-        project_dir=project_dir,
-        version=settings.version,
-        project_id=project_id,
-        video_path=video_path,
-        thumbnail_path=thumbnail_path,
-        quality_report_path=quality_report_path,
-    )
+        with telemetry.stage("director"):
+            studio_profile = load_studio_profile(settings.root)
+            storyboard_result, _director_plan = apply_director_engine(
+                storyboard_result,
+                studio_profile=studio_profile,
+            )
 
-    build_publish_package(
-        project_dir=project_dir,
-        channel=get_channel_preset(settings.root, "mind-frontier"),
-    )
+        with telemetry.stage("visual_storytelling"):
+            storyboard_result, _shot_plan = apply_visual_storytelling(
+                storyboard_result,
+                settings.root,
+                style_name="documentary",
+            )
 
-    record_project(
-        root=settings.root,
-        project_id=project_id,
-        topic=request.topic,
-        producer_review=producer_result,
-        quality_report=quality_result,
-        storyboard=storyboard_result,
-    )
+        with telemetry.stage("cinema_direction"):
+            storyboard_result, cinema_report = apply_cinematic_direction(
+                storyboard_result,
+            )
 
-    save_studio_profile(
-        settings.root,
-        load_studio_profile(settings.root),
-    )
+        with telemetry.stage("prompt_compilation"):
+            storyboard_result = compile_storyboard_prompts(
+                storyboard_result,
+                settings.root,
+                character_bible=character_result,
+                style_name="documentary",
+            )
 
-    save_project(output)
-    return output
+        with telemetry.stage("seo"):
+            seo_result = seo.run(script_result)
+
+        output = ProjectOutput(
+            project_id=project_id,
+            topic=request.topic,
+            research=research_result,
+            script=script_result,
+            storyboard=storyboard_result,
+            character_bible=character_result,
+            seo=seo_result,
+        )
+
+        with telemetry.stage("project_storage"):
+            project_dir = save_project(output)
+            save_beat_map(project_dir, narrative_beats)
+            save_cinema_report(project_dir, cinema_report)
+
+        with telemetry.stage("render"):
+            video_path = build_video(
+                project_dir,
+                script_result,
+                storyboard_result,
+            )
+            output.video_url = f"/projects/{project_id}/{video_path.name}"
+
+        with telemetry.stage("quality_inspection"):
+            quality_result = inspect_project(
+                script=script_result,
+                storyboard=storyboard_result,
+                character_bible=character_result,
+            )
+            quality_report_path = project_dir / "quality-report.json"
+            quality_report_path.write_text(
+                json.dumps(quality_result.model_dump(), indent=2),
+                encoding="utf-8",
+            )
+
+        with telemetry.stage("thumbnail"):
+            thumbnail_source = choose_thumbnail_source(project_dir / "media")
+            thumbnail_path = project_dir / "thumbnail.jpg"
+            create_thumbnail(
+                source_image=thumbnail_source,
+                title=script_result.title,
+                output_path=thumbnail_path,
+            )
+
+        with telemetry.stage("release_package"):
+            build_release_package(
+                project_dir=project_dir,
+                output=output,
+                quality_report=quality_result,
+                video_path=video_path,
+                thumbnail_path=thumbnail_path,
+            )
+            write_release_manifest(
+                project_dir=project_dir,
+                version=settings.version,
+                project_id=project_id,
+                video_path=video_path,
+                thumbnail_path=thumbnail_path,
+                quality_report_path=quality_report_path,
+            )
+            build_publish_package(
+                project_dir=project_dir,
+                channel=get_channel_preset(settings.root, "mind-frontier"),
+            )
+
+        with telemetry.stage("studio_memory"):
+            record_project(
+                root=settings.root,
+                project_id=project_id,
+                topic=request.topic,
+                producer_review=producer_result,
+                quality_report=quality_result,
+                storyboard=storyboard_result,
+            )
+            save_studio_profile(
+                settings.root,
+                load_studio_profile(settings.root),
+            )
+
+        with telemetry.stage("final_save"):
+            save_project(output)
+
+        success = True
+        return output
+    finally:
+        telemetry.finish(project_dir, success)
