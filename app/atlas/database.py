@@ -138,3 +138,13 @@ def migrate(root: Path) -> None:
             """,
             (str(SCHEMA_VERSION),),
         )
+
+
+# v20.1 YouTube channel extension
+from app.atlas.database_patch import ensure_youtube_channel_table
+
+_original_migrate = migrate
+
+def migrate(root: Path) -> None:
+    _original_migrate(root)
+    ensure_youtube_channel_table(root)

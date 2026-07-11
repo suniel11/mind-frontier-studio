@@ -82,6 +82,94 @@
       <div id="youtube-sync-content">
         <p class="fine">Checking YouTube connection…</p>
       </div>
+
+      <div class="youtube-video-library">
+        <div class="youtube-library-heading">
+          <div>
+            <h3>YouTube Video Library</h3>
+            <p class="fine">Live uploads imported into Atlas.</p>
+          </div>
+          <button id="youtube-sync-videos" type="button" class="small-button">
+            Sync Videos
+          </button>
+        </div>
+
+        <div id="youtube-video-summary" class="youtube-video-summary"></div>
+
+        <div class="youtube-library-tools">
+          <input
+            id="youtube-video-search"
+            type="search"
+            placeholder="Search imported videos"
+          >
+          <select id="youtube-video-filter">
+            <option value="all">All videos</option>
+            <option value="shorts">Shorts</option>
+            <option value="long">Long-form</option>
+          </select>
+        </div>
+
+        <div id="youtube-video-list" class="youtube-video-list">
+          <p class="fine">Sync the channel to import videos.</p>
+        </div>
+      </div>
+
+
+      <div class="youtube-matching-panel">
+        <div class="youtube-library-heading">
+          <div>
+            <h3>Project Matching</h3>
+            <p class="fine">
+              Link Studio projects to published YouTube videos.
+            </p>
+          </div>
+          <button id="youtube-auto-match" type="button" class="small-button">
+            Auto-Match High Confidence
+          </button>
+        </div>
+
+        <div id="youtube-match-summary" class="youtube-video-summary"></div>
+        <div id="youtube-match-list" class="youtube-match-list">
+          <p class="fine">Loading match suggestions…</p>
+        </div>
+      </div>
+
+
+      <div class="youtube-dashboard-panel">
+        <div class="youtube-library-heading">
+          <div>
+            <h3>YouTube Intelligence Dashboard</h3>
+            <p class="fine">
+              Live channel overview and incremental synchronization.
+            </p>
+          </div>
+          <div class="youtube-dashboard-actions">
+            <button id="youtube-sync-latest" type="button" class="small-button">
+              Sync Latest
+            </button>
+            <button id="youtube-full-sync" type="button" class="small-button">
+              Full Sync
+            </button>
+          </div>
+        </div>
+
+        <div id="youtube-dashboard-summary" class="youtube-dashboard-summary"></div>
+
+        <div class="youtube-dashboard-grid">
+          <article class="youtube-dashboard-card">
+            <h4>Recent Uploads</h4>
+            <div id="youtube-recent-videos"></div>
+          </article>
+
+          <article class="youtube-dashboard-card">
+            <h4>Top Videos</h4>
+            <div id="youtube-top-videos"></div>
+          </article>
+        </div>
+
+        <div id="youtube-last-sync" class="fine"></div>
+      </div>
+
     </section>
 
     <section class="operations-panel panel">

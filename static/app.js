@@ -1055,9 +1055,14 @@ async function loadYouTubeSync() {
           </article>
         `).join("") || "<p>No owned channel was returned.</p>"}
       </div>
-      <button id="youtube-disconnect" type="button" class="small-button">
-        Disconnect
-      </button>
+      <div class="youtube-sync-actions">
+        <button id="youtube-sync-channel" type="button" class="small-button">
+          Sync Channel
+        </button>
+        <button id="youtube-disconnect" type="button" class="small-button">
+          Disconnect
+        </button>
+      </div>
     `;
   } catch (error) {
     badge.textContent = "ERROR";
@@ -1102,3 +1107,402 @@ document.addEventListener("click", async (event) => {
 });
 
 loadYouTubeSync();
+
+document.addEventListener("click", async (event) => {
+  if (event.target?.id !== "youtube-sync-channel") return;
+
+  const button = event.target;
+  button.disabled = true;
+  button.textContent = "Syncing…";
+
+  try {
+    const response = await fetch("/api/youtube/sync-channel", {
+      method: "POST"
+    });
+    const data = await response.json();
+
+    if (!response.ok) {
+      throw new Error(data.detail || "Channel sync failed.");
+    }
+
+    button.textContent = "Synced";
+    await loadYouTubeSync();
+  } catch (error) {
+    button.textContent = "Sync Failed";
+    alert(error.message);
+  } finally {
+    setTimeout(() => {
+      button.disabled = false;
+      button.textContent = "Sync Channel";
+    }, 1200);
+  }
+});
+
+
+async function loadYouTubeVideoLibrary() {
+  const list = document.querySelector("#youtube-video-list");
+  const summary = document.querySelector("#youtube-video-summary");
+  if (!list || !summary) return;
+
+  const search = document.querySelector("#youtube-video-search")?.value || "";
+  const filter = document.querySelector("#youtube-video-filter")?.value || "all";
+  const params = new URLSearchParams({limit: "200", search});
+
+  if (filter === "shorts") params.set("short_only", "true");
+  if (filter === "long") params.set("short_only", "false");
+
+  try {
+    const [videosResponse, summaryResponse] = await Promise.all([
+      fetch(`/api/youtube/videos?${params.toString()}`),
+      fetch("/api/youtube/video-summary")
+    ]);
+
+    const videosData = await videosResponse.json();
+    const summaryData = await summaryResponse.json();
+
+    if (!videosResponse.ok) {
+      throw new Error(videosData.detail || "Could not load videos.");
+    }
+
+    summary.innerHTML = `
+      <div><span>Imported</span><strong>${summaryData.total_videos || 0}</strong></div>
+      <div><span>Shorts</span><strong>${summaryData.shorts || 0}</strong></div>
+      <div><span>Total Views</span><strong>${Number(summaryData.total_views || 0).toLocaleString()}</strong></div>
+      <div><span>Average Views</span><strong>${Number(summaryData.average_views || 0).toLocaleString()}</strong></div>
+    `;
+
+    list.innerHTML = videosData.videos.length
+      ? videosData.videos.map((video) => `
+          <article class="youtube-video-row">
+            ${video.thumbnail_url
+              ? `<img src="${video.thumbnail_url}" alt="">`
+              : ""}
+            <div class="youtube-video-copy">
+              <strong>${escapeHtml(video.title)}</strong>
+              <span>
+                ${video.is_short ? "Short" : "Long-form"} ·
+                ${escapeHtml(video.privacy_status || "unknown")} ·
+                ${Number(video.views || 0).toLocaleString()} views
+              </span>
+              <small>
+                ${Number(video.likes || 0).toLocaleString()} likes ·
+                ${Number(video.comments || 0).toLocaleString()} comments
+              </small>
+            </div>
+            <a href="${video.url}" target="_blank" rel="noopener">Open</a>
+          </article>
+        `).join("")
+      : '<p class="fine">No imported videos match this filter.</p>';
+  } catch (error) {
+    list.innerHTML =
+      `<p class="fine">Video library error: ${escapeHtml(error.message)}</p>`;
+  }
+}
+
+document.addEventListener("click", async (event) => {
+  if (event.target?.id !== "youtube-sync-videos") return;
+
+  const button = event.target;
+  button.disabled = true;
+  button.textContent = "Syncing…";
+
+  try {
+    const response = await fetch("/api/youtube/sync-videos", {
+      method: "POST"
+    });
+    const data = await response.json();
+
+    if (!response.ok) {
+      throw new Error(data.detail || "Video synchronization failed.");
+    }
+
+    button.textContent = `Imported ${data.imported_count}`;
+    await loadYouTubeVideoLibrary();
+  } catch (error) {
+    button.textContent = "Sync Failed";
+    alert(error.message);
+  } finally {
+    setTimeout(() => {
+      button.disabled = false;
+      button.textContent = "Sync Videos";
+    }, 1500);
+  }
+});
+
+document.querySelector("#youtube-video-search")?.addEventListener(
+  "input",
+  loadYouTubeVideoLibrary
+);
+
+document.querySelector("#youtube-video-filter")?.addEventListener(
+  "change",
+  loadYouTubeVideoLibrary
+);
+
+loadYouTubeVideoLibrary();
+
+
+async function loadYouTubeMatches() {
+  const list = document.querySelector("#youtube-match-list");
+  const summary = document.querySelector("#youtube-match-summary");
+  if (!list || !summary) return;
+
+  try {
+    const [suggestionsResponse, summaryResponse] = await Promise.all([
+      fetch("/api/youtube/match-suggestions?minimum_score=55"),
+      fetch("/api/youtube/match-summary")
+    ]);
+
+    const suggestionsData = await suggestionsResponse.json();
+    const summaryData = await summaryResponse.json();
+
+    if (!suggestionsResponse.ok) {
+      throw new Error(
+        suggestionsData.detail || "Could not load match suggestions."
+      );
+    }
+
+    summary.innerHTML = `
+      <div><span>Videos</span><strong>${summaryData.total_videos || 0}</strong></div>
+      <div><span>Matched</span><strong>${summaryData.matched_videos || 0}</strong></div>
+      <div><span>Unmatched</span><strong>${summaryData.unmatched_videos || 0}</strong></div>
+      <div><span>Published Projects</span><strong>${summaryData.published_projects || 0}</strong></div>
+    `;
+
+    const suggestions = suggestionsData.suggestions || [];
+    list.innerHTML = suggestions.length
+      ? suggestions.map((item) => `
+          <article class="youtube-match-row">
+            <div class="youtube-match-copy">
+              <strong>${escapeHtml(item.video_title)}</strong>
+              <span>Suggested project: ${escapeHtml(item.project_title)}</span>
+              <small>
+                Match score ${item.score} ·
+                ${escapeHtml(item.confidence)} confidence ·
+                ${Number(item.views || 0).toLocaleString()} views
+              </small>
+              <ul>
+                ${item.reasons.map((reason) =>
+                  `<li>${escapeHtml(reason)}</li>`
+                ).join("")}
+              </ul>
+            </div>
+            <button
+              type="button"
+              class="youtube-confirm-match small-button"
+              data-video-id="${escapeHtml(item.video_id)}"
+              data-project-id="${escapeHtml(item.project_id)}"
+            >
+              Confirm Match
+            </button>
+          </article>
+        `).join("")
+      : '<p class="fine">No unmatched videos currently meet the suggestion threshold.</p>';
+  } catch (error) {
+    list.innerHTML =
+      `<p class="fine">Matching error: ${escapeHtml(error.message)}</p>`;
+  }
+}
+
+document.addEventListener("click", async (event) => {
+  const confirmButton = event.target.closest(".youtube-confirm-match");
+
+  if (confirmButton) {
+    confirmButton.disabled = true;
+    confirmButton.textContent = "Matching…";
+
+    try {
+      const response = await fetch("/api/youtube/match", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({
+          video_id: confirmButton.dataset.videoId,
+          project_id: confirmButton.dataset.projectId
+        })
+      });
+      const data = await response.json();
+
+      if (!response.ok) {
+        throw new Error(data.detail || "Match failed.");
+      }
+
+      await loadYouTubeMatches();
+      if (typeof loadAtlas === "function") await loadAtlas();
+    } catch (error) {
+      alert(error.message);
+      confirmButton.disabled = false;
+      confirmButton.textContent = "Confirm Match";
+    }
+  }
+
+  if (event.target?.id === "youtube-auto-match") {
+    const button = event.target;
+    button.disabled = true;
+    button.textContent = "Matching…";
+
+    try {
+      const response = await fetch("/api/youtube/auto-match", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({threshold: 85})
+      });
+      const data = await response.json();
+
+      if (!response.ok) {
+        throw new Error(data.detail || "Auto-match failed.");
+      }
+
+      button.textContent = `Matched ${data.matched_count}`;
+      await loadYouTubeMatches();
+      if (typeof loadAtlas === "function") await loadAtlas();
+    } catch (error) {
+      button.textContent = "Auto-Match Failed";
+      alert(error.message);
+    } finally {
+      setTimeout(() => {
+        button.disabled = false;
+        button.textContent = "Auto-Match High Confidence";
+      }, 1500);
+    }
+  }
+});
+
+loadYouTubeMatches();
+
+
+async function loadYouTubeDashboard() {
+  const summary = document.querySelector("#youtube-dashboard-summary");
+  const recent = document.querySelector("#youtube-recent-videos");
+  const top = document.querySelector("#youtube-top-videos");
+  const lastSync = document.querySelector("#youtube-last-sync");
+
+  if (!summary || !recent || !top || !lastSync) return;
+
+  try {
+    const response = await fetch("/api/youtube/dashboard");
+    const data = await response.json();
+
+    if (!response.ok) {
+      throw new Error(data.detail || "Could not load YouTube dashboard.");
+    }
+
+    const channel = data.channel || {};
+    const totals = data.summary || {};
+
+    summary.innerHTML = `
+      <div><span>Channel</span><strong>${escapeHtml(channel.title || "Not synced")}</strong></div>
+      <div><span>Subscribers</span><strong>${Number(channel.subscriber_count || 0).toLocaleString()}</strong></div>
+      <div><span>Imported</span><strong>${Number(totals.imported_videos || 0).toLocaleString()}</strong></div>
+      <div><span>Total Views</span><strong>${Number(totals.total_views || 0).toLocaleString()}</strong></div>
+      <div><span>Matched</span><strong>${Number(totals.matched_videos || 0).toLocaleString()}</strong></div>
+      <div><span>Unmatched</span><strong>${Number(totals.unmatched_videos || 0).toLocaleString()}</strong></div>
+    `;
+
+    recent.innerHTML = data.recent_videos.length
+      ? data.recent_videos.map((video) => `
+          <a
+            class="youtube-mini-video"
+            href="https://www.youtube.com/watch?v=${encodeURIComponent(video.video_id)}"
+            target="_blank"
+            rel="noopener"
+          >
+            ${video.thumbnail_url ? `<img src="${video.thumbnail_url}" alt="">` : ""}
+            <div>
+              <strong>${escapeHtml(video.title)}</strong>
+              <span>${Number(video.views || 0).toLocaleString()} views · ${video.is_short ? "Short" : "Long-form"}</span>
+            </div>
+          </a>
+        `).join("")
+      : '<p class="fine">No imported videos yet.</p>';
+
+    top.innerHTML = data.top_videos.length
+      ? data.top_videos.map((video, index) => `
+          <a
+            class="youtube-mini-video"
+            href="https://www.youtube.com/watch?v=${encodeURIComponent(video.video_id)}"
+            target="_blank"
+            rel="noopener"
+          >
+            <span class="youtube-rank">${index + 1}</span>
+            <div>
+              <strong>${escapeHtml(video.title)}</strong>
+              <span>${Number(video.views || 0).toLocaleString()} views</span>
+            </div>
+          </a>
+        `).join("")
+      : '<p class="fine">No performance data yet.</p>';
+
+    if (data.last_sync) {
+      const sync = data.last_sync;
+      lastSync.textContent =
+        `Last ${sync.mode} sync: ${sync.status}. ` +
+        `${sync.discovered_count || 0} new, ` +
+        `${sync.refreshed_count || 0} refreshed.`;
+    } else {
+      lastSync.textContent = "No synchronization run recorded yet.";
+    }
+  } catch (error) {
+    summary.innerHTML =
+      `<p class="fine">Dashboard error: ${escapeHtml(error.message)}</p>`;
+  }
+}
+
+async function runYouTubeLibrarySync(mode, button) {
+  button.disabled = true;
+  button.textContent = mode === "full" ? "Full Syncing…" : "Syncing…";
+
+  try {
+    const response = await fetch("/api/youtube/sync-library", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({mode})
+    });
+    const data = await response.json();
+
+    if (!response.ok) {
+      throw new Error(data.detail || "YouTube synchronization failed.");
+    }
+
+    button.textContent =
+      mode === "full"
+        ? `Full Sync: ${data.refreshed_videos}`
+        : `New: ${data.new_videos}`;
+
+    await loadYouTubeDashboard();
+    if (typeof loadYouTubeVideoLibrary === "function") {
+      await loadYouTubeVideoLibrary();
+    }
+    if (typeof loadYouTubeMatches === "function") {
+      await loadYouTubeMatches();
+    }
+    if (typeof loadAtlas === "function") {
+      await loadAtlas();
+    }
+  } catch (error) {
+    button.textContent = "Sync Failed";
+    alert(error.message);
+  } finally {
+    setTimeout(() => {
+      button.disabled = false;
+      button.textContent =
+        mode === "full" ? "Full Sync" : "Sync Latest";
+    }, 1600);
+  }
+}
+
+document.addEventListener("click", async (event) => {
+  if (event.target?.id === "youtube-sync-latest") {
+    await runYouTubeLibrarySync("incremental", event.target);
+  }
+
+  if (event.target?.id === "youtube-full-sync") {
+    const confirmed = confirm(
+      "Run a full channel sync? This uses more YouTube API quota."
+    );
+    if (confirmed) {
+      await runYouTubeLibrarySync("full", event.target);
+    }
+  }
+});
+
+loadYouTubeDashboard();
