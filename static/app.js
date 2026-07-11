@@ -1506,3 +1506,615 @@ document.addEventListener("click", async (event) => {
 });
 
 loadYouTubeDashboard();
+
+
+function renderIntelligenceRows(items) {
+  if (!items || !items.length) {
+    return '<p class="fine">Not enough data yet.</p>';
+  }
+
+  return items.slice(0, 6).map((item) => `
+    <div class="atlas-intelligence-row">
+      <strong>${escapeHtml(item.name)}</strong>
+      <span>${item.sample_size} videos</span>
+      <span>${Number(item.average_views || 0).toLocaleString()} avg views</span>
+      <span>${Number(item.average_retention || 0).toFixed(1)}% viewed</span>
+    </div>
+  `).join("");
+}
+
+async function loadAtlasIntelligence() {
+  const recommendations = document.querySelector(
+    "#atlas-intelligence-recommendations"
+  );
+  if (!recommendations) return;
+
+  try {
+    const response = await fetch("/api/youtube/intelligence");
+    const data = await response.json();
+
+    if (!response.ok) {
+      throw new Error(data.detail || "Could not load Atlas intelligence.");
+    }
+
+    recommendations.innerHTML = `
+      <div class="atlas-intelligence-insights">
+        ${data.recommendations.map((item) => `
+          <p>${escapeHtml(item)}</p>
+        `).join("")}
+      </div>
+    `;
+
+    document.querySelector("#atlas-topic-intelligence").innerHTML =
+      renderIntelligenceRows(data.topic_intelligence);
+
+    document.querySelector("#atlas-hook-intelligence").innerHTML =
+      renderIntelligenceRows(data.hook_intelligence);
+
+    document.querySelector("#atlas-publishing-intelligence").innerHTML =
+      renderIntelligenceRows(data.publishing_days);
+
+    document.querySelector("#atlas-growth-intelligence").innerHTML = `
+      <div class="atlas-growth-summary">
+        <div><span>Views</span><strong>${Number(data.growth.total_views || 0).toLocaleString()}</strong></div>
+        <div><span>Watch Hours</span><strong>${Number(data.growth.total_watch_hours || 0).toLocaleString()}</strong></div>
+        <div><span>Subscribers</span><strong>${Number(data.growth.subscribers_gained || 0).toLocaleString()}</strong></div>
+      </div>
+    `;
+
+    document.querySelector("#atlas-intelligence-limitations").textContent =
+      data.limitations.join(" ");
+  } catch (error) {
+    recommendations.innerHTML =
+      `<p class="fine">Atlas intelligence error: ${escapeHtml(error.message)}</p>`;
+  }
+}
+
+document.addEventListener("click", async (event) => {
+  if (event.target?.id !== "youtube-sync-analytics") return;
+
+  const button = event.target;
+  button.disabled = true;
+  button.textContent = "Syncing…";
+
+  try {
+    const startDate = new Date();
+    startDate.setFullYear(startDate.getFullYear() - 1);
+
+    const response = await fetch("/api/youtube/sync-analytics", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({
+        start_date: startDate.toISOString().slice(0, 10)
+      })
+    });
+    const data = await response.json();
+
+    if (!response.ok) {
+      throw new Error(data.detail || "Analytics synchronization failed.");
+    }
+
+    button.textContent =
+      `Synced ${data.video.video_analytics_count}`;
+    await loadAtlasIntelligence();
+  } catch (error) {
+    button.textContent = "Sync Failed";
+    alert(error.message);
+  } finally {
+    setTimeout(() => {
+      button.disabled = false;
+      button.textContent = "Sync Analytics";
+    }, 1600);
+  }
+});
+
+loadAtlasIntelligence();
+
+
+async function runAtlasAgent(endpoint, payload = null) {
+  const status = document.querySelector("#atlas-agent-status");
+  const output = document.querySelector("#atlas-agent-output");
+
+  status.textContent = "Running Atlas agent…";
+  output.innerHTML = "";
+
+  const options = payload
+    ? {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify(payload)
+      }
+    : {method: "GET"};
+
+  try {
+    const response = await fetch(endpoint, options);
+    const data = await response.json();
+
+    if (!response.ok) {
+      throw new Error(data.detail || "Agent failed.");
+    }
+
+    status.textContent = "Complete";
+    output.innerHTML = `<pre>${escapeHtml(JSON.stringify(data, null, 2))}</pre>`;
+  } catch (error) {
+    status.textContent = `Error: ${error.message}`;
+  }
+}
+
+document.querySelector("#atlas-run-research")?.addEventListener("click", async () => {
+  const topic = document.querySelector("#atlas-agent-topic").value.trim();
+  if (topic) {
+    await runAtlasAgent("/api/agents/research", {topic, target_seconds: 45});
+  }
+});
+
+document.querySelector("#atlas-run-producer")?.addEventListener("click", async () => {
+  const topic = document.querySelector("#atlas-agent-topic").value.trim();
+  if (topic) {
+    await runAtlasAgent("/api/agents/producer", {topic, target_seconds: 45});
+  }
+});
+
+document.querySelector("#atlas-run-thumbnail")?.addEventListener("click", async () => {
+  const topic = document.querySelector("#atlas-agent-topic").value.trim();
+  if (topic) {
+    await runAtlasAgent("/api/agents/thumbnail", {topic, target_seconds: 45});
+  }
+});
+
+document.querySelector("#atlas-run-strategy")?.addEventListener("click", async () => {
+  await runAtlasAgent("/api/agents/strategy", {count: 5});
+});
+
+
+async function loadAtlasMemoryOverview() {
+  const summary = document.querySelector("#atlas-memory-summary");
+  if (!summary) return;
+
+  try {
+    const response = await fetch("/api/memory/overview");
+    const data = await response.json();
+
+    if (!response.ok) {
+      throw new Error(data.detail || "Could not load Atlas Memory.");
+    }
+
+    summary.innerHTML = `
+      <div><span>Entities</span><strong>${data.entity_count}</strong></div>
+      <div><span>Relations</span><strong>${data.relation_count}</strong></div>
+      <div><span>Topics</span><strong>${data.top_topics.length}</strong></div>
+      <div><span>Categories</span><strong>${data.categories.length}</strong></div>
+    `;
+
+    const results = document.querySelector("#atlas-memory-results");
+    results.innerHTML = data.top_topics.map((item) => `
+      <article class="atlas-memory-card">
+        <strong>${escapeHtml(item.name)}</strong>
+        <span>${item.evidence_count} evidence items</span>
+        <span>${Number(item.attributes.average_views || 0).toLocaleString()} avg views</span>
+        <span>${Number(item.attributes.average_retention || 0).toFixed(1)}% avg retention</span>
+      </article>
+    `).join("") || '<p class="fine">Rebuild memory to create topic knowledge.</p>';
+  } catch (error) {
+    summary.innerHTML =
+      `<p class="fine">Atlas Memory error: ${escapeHtml(error.message)}</p>`;
+  }
+}
+
+document.querySelector("#atlas-memory-rebuild")?.addEventListener("click", async (event) => {
+  const button = event.target;
+  button.disabled = true;
+  button.textContent = "Rebuilding…";
+
+  try {
+    const response = await fetch("/api/memory/rebuild", {method: "POST"});
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.detail || "Rebuild failed.");
+
+    button.textContent = `Built ${data.entity_count}`;
+    await loadAtlasMemoryOverview();
+  } catch (error) {
+    button.textContent = "Rebuild Failed";
+    alert(error.message);
+  } finally {
+    setTimeout(() => {
+      button.disabled = false;
+      button.textContent = "Rebuild Memory";
+    }, 1400);
+  }
+});
+
+document.querySelector("#atlas-memory-search")?.addEventListener("click", async () => {
+  const query = document.querySelector("#atlas-memory-query").value.trim();
+  const results = document.querySelector("#atlas-memory-results");
+  if (!query) return;
+
+  const response = await fetch(
+    `/api/memory/search?q=${encodeURIComponent(query)}`
+  );
+  const data = await response.json();
+
+  results.innerHTML = data.results.map((item) => `
+    <article class="atlas-memory-card">
+      <strong>${escapeHtml(item.name)}</strong>
+      <span>${escapeHtml(item.entity_type)}</span>
+      <span>Confidence ${(Number(item.confidence || 0) * 100).toFixed(0)}%</span>
+      <span>Search score ${item.search_score}</span>
+    </article>
+  `).join("") || '<p class="fine">No matching memory.</p>';
+});
+
+loadAtlasMemoryOverview();
+
+
+document.querySelector("#prediction-run")?.addEventListener("click", async () => {
+  const topic = document.querySelector("#prediction-topic").value.trim();
+  const seconds = Number(document.querySelector("#prediction-seconds").value || 45);
+  const hook = document.querySelector("#prediction-hook").value;
+  const status = document.querySelector("#prediction-status");
+  const output = document.querySelector("#prediction-output");
+
+  if (!topic) {
+    status.textContent = "Enter a topic first.";
+    return;
+  }
+
+  status.textContent = "Forecasting…";
+  output.innerHTML = "";
+
+  try {
+    const response = await fetch("/api/prediction/forecast", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({
+        topic,
+        target_seconds: seconds,
+        hook_type: hook
+      })
+    });
+    const data = await response.json();
+
+    if (!response.ok) {
+      throw new Error(data.detail || "Prediction failed.");
+    }
+
+    status.textContent = "Forecast complete.";
+    output.innerHTML = `
+      <div class="prediction-cards">
+        <div><span>Views</span><strong>${Number(data.predicted_views_low).toLocaleString()}–${Number(data.predicted_views_high).toLocaleString()}</strong></div>
+        <div><span>Retention</span><strong>${Number(data.predicted_retention).toFixed(1)}%</strong></div>
+        <div><span>Subscribers</span><strong>${data.predicted_subscribers_low}–${data.predicted_subscribers_high}</strong></div>
+        <div><span>Confidence</span><strong>${(Number(data.confidence) * 100).toFixed(0)}%</strong></div>
+        <div><span>Risk</span><strong>${escapeHtml(data.risk_level)}</strong></div>
+      </div>
+
+      <div class="prediction-evidence">
+        <h3>Comparable videos</h3>
+        ${
+          data.evidence.comparable_videos.length
+            ? data.evidence.comparable_videos.map((item) => `
+                <article>
+                  <strong>${escapeHtml(item.title)}</strong>
+                  <span>${Number(item.views).toLocaleString()} views · ${Number(item.retention).toFixed(1)}% retention</span>
+                </article>
+              `).join("")
+            : '<p class="fine">No close historical comparisons yet.</p>'
+        }
+      </div>
+
+      <p class="fine">${escapeHtml(data.evidence.method)}</p>
+    `;
+  } catch (error) {
+    status.textContent = `Prediction error: ${error.message}`;
+  }
+});
+
+
+let currentWorkspaceBrief = null;
+
+function renderWorkspaceBrief(data) {
+  currentWorkspaceBrief = data;
+
+  document.querySelector("#workspace-summary").innerHTML = `
+    <div><span>Readiness</span><strong>${data.readiness_score}%</strong></div>
+    <div><span>Risk</span><strong>${escapeHtml(data.prediction.risk_level)}</strong></div>
+    <div><span>Confidence</span><strong>${(Number(data.prediction.confidence) * 100).toFixed(0)}%</strong></div>
+    <div><span>Runtime</span><strong>${data.target_seconds}s</strong></div>
+  `;
+
+  document.querySelector("#workspace-research").innerHTML = `
+    <p>${escapeHtml(data.research.research_brief)}</p>
+    <ul>
+      ${data.research.content_gaps.map((item) =>
+        `<li>${escapeHtml(item)}</li>`
+      ).join("")}
+    </ul>
+  `;
+
+  document.querySelector("#workspace-producer").innerHTML = `
+    <p><strong>Hook:</strong> ${escapeHtml(data.producer.recommended_hook_type)}</p>
+    <p><strong>CTA:</strong> ${escapeHtml(data.producer.cta)}</p>
+    <ol>
+      ${data.producer.outline.map((item) =>
+        `<li><strong>${escapeHtml(item.beat)}</strong> — ${escapeHtml(item.purpose)}</li>`
+      ).join("")}
+    </ol>
+  `;
+
+  document.querySelector("#workspace-thumbnail").innerHTML = `
+    <p>${escapeHtml(data.thumbnail.thumbnail_prompt)}</p>
+    <p><strong>Composition:</strong> ${escapeHtml(data.thumbnail.concept.composition)}</p>
+    <p><strong>Palette:</strong> ${escapeHtml(data.thumbnail.concept.palette)}</p>
+  `;
+
+  document.querySelector("#workspace-publishing").innerHTML = `
+    <p><strong>Day:</strong> ${escapeHtml(data.publishing.recommended_day)}</p>
+    <p><strong>Hour UTC:</strong> ${data.publishing.recommended_hour_utc ?? "Insufficient data"}</p>
+    <p><strong>Confidence:</strong> ${escapeHtml(data.publishing.confidence)}</p>
+  `;
+
+  document.querySelector("#workspace-prediction").innerHTML = `
+    <p><strong>Views:</strong> ${Number(data.prediction.predicted_views_low).toLocaleString()}–${Number(data.prediction.predicted_views_high).toLocaleString()}</p>
+    <p><strong>Retention:</strong> ${Number(data.prediction.predicted_retention).toFixed(1)}%</p>
+    <p><strong>Subscribers:</strong> ${data.prediction.predicted_subscribers_low}–${data.prediction.predicted_subscribers_high}</p>
+  `;
+
+  document.querySelector("#workspace-memory").innerHTML = data.memory.length
+    ? data.memory.map((item) => `
+        <div class="workspace-memory-item">
+          <strong>${escapeHtml(item.name)}</strong>
+          <span>${escapeHtml(item.entity_type)} · confidence ${(Number(item.confidence) * 100).toFixed(0)}%</span>
+        </div>
+      `).join("")
+    : '<p class="fine">No strong memory evidence yet.</p>';
+}
+
+async function buildProducerWorkspace(save = false) {
+  const topic = document.querySelector("#workspace-topic").value.trim();
+  const seconds = Number(document.querySelector("#workspace-seconds").value || 45);
+  const hookType = document.querySelector("#workspace-hook").value;
+  const status = document.querySelector("#workspace-status");
+
+  if (!topic) {
+    status.textContent = "Enter a topic first.";
+    return;
+  }
+
+  status.textContent = save ? "Saving workspace…" : "Building workspace…";
+
+  const endpoint = save ? "/api/workspace/save" : "/api/workspace/build";
+  const payload = {
+    topic,
+    target_seconds: seconds,
+    hook_type: hookType
+  };
+
+  if (save) payload.notes = "";
+
+  try {
+    const response = await fetch(endpoint, {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify(payload)
+    });
+    const data = await response.json();
+
+    if (!response.ok) {
+      throw new Error(data.detail || "Workspace failed.");
+    }
+
+    const brief = save ? data.brief : data;
+    renderWorkspaceBrief(brief);
+    status.textContent = save
+      ? `Saved as ${data.workspace_id}`
+      : "Workspace ready.";
+  } catch (error) {
+    status.textContent = `Workspace error: ${error.message}`;
+  }
+}
+
+document.querySelector("#workspace-build")?.addEventListener(
+  "click",
+  async () => buildProducerWorkspace(false)
+);
+
+document.querySelector("#workspace-save")?.addEventListener(
+  "click",
+  async () => buildProducerWorkspace(true)
+);
+
+
+let atlasConversationId = null;
+
+function appendAtlasMessage(role, content, evidence = []) {
+  const container = document.querySelector("#atlas-chat-messages");
+  const evidenceHtml = evidence.length
+    ? `
+      <details class="atlas-chat-evidence">
+        <summary>Evidence (${evidence.length})</summary>
+        <pre>${escapeHtml(JSON.stringify(evidence, null, 2))}</pre>
+      </details>
+    `
+    : "";
+
+  container.insertAdjacentHTML(
+    "beforeend",
+    `
+      <div class="atlas-chat-message ${role}">
+        <div>${escapeHtml(content).replaceAll("\n", "<br>")}</div>
+        ${evidenceHtml}
+      </div>
+    `
+  );
+  container.scrollTop = container.scrollHeight;
+}
+
+async function sendAtlasChat() {
+  const input = document.querySelector("#atlas-chat-input");
+  const status = document.querySelector("#atlas-chat-status");
+  const message = input.value.trim();
+
+  if (!message) return;
+
+  appendAtlasMessage("user", message);
+  input.value = "";
+  status.textContent = "Atlas is analyzing local evidence…";
+
+  try {
+    const response = await fetch("/api/chat/ask", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({
+        message,
+        conversation_id: atlasConversationId
+      })
+    });
+    const data = await response.json();
+
+    if (!response.ok) {
+      throw new Error(data.detail || "Atlas conversation failed.");
+    }
+
+    atlasConversationId = data.conversation_id;
+    appendAtlasMessage("assistant", data.answer, data.evidence || []);
+    status.textContent = "Grounded in Atlas evidence.";
+  } catch (error) {
+    appendAtlasMessage("assistant", `Error: ${error.message}`);
+    status.textContent = "";
+  }
+}
+
+document.querySelector("#atlas-chat-send")?.addEventListener(
+  "click",
+  sendAtlasChat
+);
+
+document.querySelector("#atlas-chat-input")?.addEventListener(
+  "keydown",
+  async (event) => {
+    if (event.key === "Enter" && !event.shiftKey) {
+      event.preventDefault();
+      await sendAtlasChat();
+    }
+  }
+);
+
+document.querySelector("#atlas-chat-new")?.addEventListener(
+  "click",
+  () => {
+    atlasConversationId = null;
+    document.querySelector("#atlas-chat-messages").innerHTML = `
+      <div class="atlas-chat-message assistant">
+        New conversation started. Ask Atlas about your channel.
+      </div>
+    `;
+  }
+);
+
+
+async function loadOrchestratorProject(projectId) {
+  const response = await fetch(
+    `/api/orchestrator/project/${encodeURIComponent(projectId)}`
+  );
+  const data = await response.json();
+
+  if (!response.ok) {
+    throw new Error(data.detail || "Could not load orchestrated project.");
+  }
+
+  document.querySelector("#orchestrator-summary").innerHTML = `
+    <div><span>Status</span><strong>${escapeHtml(data.status)}</strong></div>
+    <div><span>Readiness</span><strong>${data.readiness_score}%</strong></div>
+    <div><span>Confidence</span><strong>${(Number(data.confidence) * 100).toFixed(0)}%</strong></div>
+    <div><span>Workspace</span><strong>${escapeHtml(data.workspace_id || "Not saved")}</strong></div>
+  `;
+
+  document.querySelector("#orchestrator-steps").innerHTML = `
+    <h3>Execution Graph</h3>
+    ${data.steps.map((step) => `
+      <article class="orchestrator-step ${step.status}">
+        <strong>${escapeHtml(step.step_name)}</strong>
+        <span>${escapeHtml(step.status)}</span>
+        <span>${Number(step.duration_seconds || 0).toFixed(2)}s</span>
+        ${step.error ? `<small>${escapeHtml(step.error)}</small>` : ""}
+      </article>
+    `).join("")}
+  `;
+
+  const plan = data.plan || {};
+  document.querySelector("#orchestrator-plan").innerHTML = `
+    <h3>Autonomous Plan</h3>
+    <div class="orchestrator-plan-grid">
+      <article>
+        <strong>Research</strong>
+        <p>${escapeHtml(plan.research?.research_brief || "Unavailable")}</p>
+      </article>
+      <article>
+        <strong>Producer</strong>
+        <p>${escapeHtml(plan.producer?.producer_prompt || "Unavailable")}</p>
+      </article>
+      <article>
+        <strong>Thumbnail</strong>
+        <p>${escapeHtml(plan.thumbnail?.thumbnail_prompt || "Unavailable")}</p>
+      </article>
+      <article>
+        <strong>Publishing</strong>
+        <p>${escapeHtml(plan.publishing?.recommended_day || "Insufficient data")} · ${plan.publishing?.recommended_hour_utc ?? "—"} UTC</p>
+      </article>
+      <article>
+        <strong>Prediction</strong>
+        <p>${Number(plan.prediction?.predicted_views_low || 0).toLocaleString()}–${Number(plan.prediction?.predicted_views_high || 0).toLocaleString()} views</p>
+      </article>
+      <article>
+        <strong>Warnings</strong>
+        <ul>
+          ${(plan.warnings || []).map((warning) =>
+            `<li>${escapeHtml(warning)}</li>`
+          ).join("") || "<li>No major warnings.</li>"}
+        </ul>
+      </article>
+    </div>
+  `;
+}
+
+document.querySelector("#orchestrator-run")?.addEventListener(
+  "click",
+  async () => {
+    const topic = document.querySelector("#orchestrator-topic").value.trim();
+    const seconds = Number(
+      document.querySelector("#orchestrator-seconds").value || 45
+    );
+    const hookType = document.querySelector("#orchestrator-hook").value;
+    const status = document.querySelector("#orchestrator-status");
+
+    if (!topic) {
+      status.textContent = "Enter a topic first.";
+      return;
+    }
+
+    status.textContent = "Atlas is running the complete workflow…";
+
+    try {
+      const response = await fetch("/api/orchestrator/create-project", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({
+          topic,
+          target_seconds: seconds,
+          hook_type: hookType,
+          save_workspace: true
+        })
+      });
+      const data = await response.json();
+
+      if (!response.ok) {
+        throw new Error(data.detail || "Orchestration failed.");
+      }
+
+      status.textContent = `Project ${data.project_id} is ${data.status}.`;
+      await loadOrchestratorProject(data.project_id);
+    } catch (error) {
+      status.textContent = `Orchestrator error: ${error.message}`;
+    }
+  }
+);

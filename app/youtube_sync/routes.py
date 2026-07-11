@@ -11,6 +11,9 @@ from app.youtube_sync.auth import (
     delete_credentials,
 )
 from app.youtube_sync.service import get_channels
+from app.youtube_sync.analytics_models import AnalyticsSyncRequest
+from app.youtube_sync.analytics_sync import sync_all_analytics
+from app.youtube_sync.intelligence import intelligence_report
 from app.youtube_sync.dashboard import youtube_dashboard
 from app.youtube_sync.incremental_sync import run_video_sync
 from app.youtube_sync.sync_models import VideoSyncRequest
@@ -219,3 +222,22 @@ def youtube_sync_library(payload: VideoSyncRequest):
 @router.get("/dashboard")
 def youtube_dashboard_data():
     return youtube_dashboard(settings.root)
+
+
+@router.post("/sync-analytics")
+def youtube_sync_analytics(payload: AnalyticsSyncRequest):
+    try:
+        return sync_all_analytics(
+            settings.root,
+            start_date=payload.start_date,
+            end_date=payload.end_date,
+        )
+    except PermissionError as exc:
+        raise HTTPException(status_code=401, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@router.get("/intelligence")
+def youtube_intelligence():
+    return intelligence_report(settings.root)

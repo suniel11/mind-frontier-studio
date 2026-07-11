@@ -170,6 +170,47 @@
         <div id="youtube-last-sync" class="fine"></div>
       </div>
 
+
+      <div class="atlas-intelligence-panel">
+        <div class="youtube-library-heading">
+          <div>
+            <h3>Atlas Intelligence</h3>
+            <p class="fine">
+              Retention, topic, hook, publishing, and growth analysis.
+            </p>
+          </div>
+          <button id="youtube-sync-analytics" type="button" class="small-button">
+            Sync Analytics
+          </button>
+        </div>
+
+        <div id="atlas-intelligence-recommendations"></div>
+
+        <div class="atlas-intelligence-grid">
+          <article class="youtube-dashboard-card">
+            <h4>Topic Intelligence</h4>
+            <div id="atlas-topic-intelligence"></div>
+          </article>
+
+          <article class="youtube-dashboard-card">
+            <h4>Hook Intelligence</h4>
+            <div id="atlas-hook-intelligence"></div>
+          </article>
+
+          <article class="youtube-dashboard-card">
+            <h4>Publishing Intelligence</h4>
+            <div id="atlas-publishing-intelligence"></div>
+          </article>
+
+          <article class="youtube-dashboard-card">
+            <h4>Growth Summary</h4>
+            <div id="atlas-growth-intelligence"></div>
+          </article>
+        </div>
+
+        <div id="atlas-intelligence-limitations" class="fine"></div>
+      </div>
+
     </section>
 
     <section class="operations-panel panel">
@@ -246,6 +287,204 @@
 
       <div id="orion-status" class="fine"></div>
       <div id="orion-mission" class="orion-mission"></div>
+    </section>
+
+
+
+
+
+
+
+    <section class="orchestrator-panel panel">
+      <div class="orchestrator-heading">
+        <div>
+          <p class="eyebrow">AUTONOMOUS ORCHESTRATOR</p>
+          <h2>One command for the complete creator workflow</h2>
+        </div>
+      </div>
+
+      <div class="orchestrator-form">
+        <input
+          id="orchestrator-topic"
+          type="text"
+          placeholder="Create a video about…"
+        >
+        <input
+          id="orchestrator-seconds"
+          type="number"
+          min="20"
+          max="90"
+          value="45"
+        >
+        <select id="orchestrator-hook">
+          <option value="direct contradiction">Direct contradiction</option>
+          <option value="question">Question</option>
+          <option value="story">Story</option>
+          <option value="statement">Statement</option>
+        </select>
+        <button id="orchestrator-run" type="button">
+          Build Autonomous Project
+        </button>
+      </div>
+
+      <div id="orchestrator-status" class="fine"></div>
+      <div id="orchestrator-summary" class="orchestrator-summary"></div>
+      <div id="orchestrator-steps" class="orchestrator-steps"></div>
+      <div id="orchestrator-plan" class="orchestrator-plan"></div>
+    </section>
+
+    <section class="atlas-chat-panel panel">
+      <div class="atlas-chat-heading">
+        <div>
+          <p class="eyebrow">ATLAS CONVERSATION</p>
+          <h2>Ask questions about your channel and production strategy</h2>
+        </div>
+        <button id="atlas-chat-new" type="button" class="small-button">
+          New Conversation
+        </button>
+      </div>
+
+      <div id="atlas-chat-messages" class="atlas-chat-messages">
+        <div class="atlas-chat-message assistant">
+          Ask Atlas what to make next, why a video underperformed, or how a topic performs.
+        </div>
+      </div>
+
+      <div class="atlas-chat-form">
+        <textarea
+          id="atlas-chat-input"
+          rows="3"
+          placeholder="Ask Atlas a question"
+        ></textarea>
+        <button id="atlas-chat-send" type="button">Ask Atlas</button>
+      </div>
+
+      <div id="atlas-chat-status" class="fine"></div>
+    </section>
+
+    <section class="producer-workspace-panel panel">
+      <div class="producer-workspace-heading">
+        <div>
+          <p class="eyebrow">PRODUCER WORKSPACE</p>
+          <h2>One place for research, production, prediction, and publishing</h2>
+        </div>
+      </div>
+
+      <div class="producer-workspace-form">
+        <input id="workspace-topic" type="text" placeholder="Enter video topic">
+        <input id="workspace-seconds" type="number" min="20" max="90" value="45">
+        <select id="workspace-hook">
+          <option value="direct contradiction">Direct contradiction</option>
+          <option value="question">Question</option>
+          <option value="story">Story</option>
+          <option value="statement">Statement</option>
+        </select>
+        <button id="workspace-build" type="button">Build Workspace</button>
+        <button id="workspace-save" type="button">Save Workspace</button>
+      </div>
+
+      <div id="workspace-status" class="fine"></div>
+      <div id="workspace-summary" class="workspace-summary"></div>
+
+      <div class="workspace-grid">
+        <article class="workspace-card">
+          <h3>Research</h3>
+          <div id="workspace-research"></div>
+        </article>
+
+        <article class="workspace-card">
+          <h3>Producer</h3>
+          <div id="workspace-producer"></div>
+        </article>
+
+        <article class="workspace-card">
+          <h3>Thumbnail</h3>
+          <div id="workspace-thumbnail"></div>
+        </article>
+
+        <article class="workspace-card">
+          <h3>Publishing</h3>
+          <div id="workspace-publishing"></div>
+        </article>
+
+        <article class="workspace-card">
+          <h3>Prediction</h3>
+          <div id="workspace-prediction"></div>
+        </article>
+
+        <article class="workspace-card">
+          <h3>Atlas Memory</h3>
+          <div id="workspace-memory"></div>
+        </article>
+      </div>
+    </section>
+
+    <section class="prediction-panel panel">
+      <div class="prediction-heading">
+        <div>
+          <p class="eyebrow">PREDICTION ENGINE</p>
+          <h2>Evidence-based performance forecast</h2>
+        </div>
+      </div>
+
+      <div class="prediction-form">
+        <input id="prediction-topic" type="text" placeholder="Video topic">
+        <input id="prediction-seconds" type="number" min="20" max="90" value="45">
+        <select id="prediction-hook">
+          <option value="direct contradiction">Direct contradiction</option>
+          <option value="question">Question</option>
+          <option value="story">Story</option>
+          <option value="statement">Statement</option>
+        </select>
+        <button id="prediction-run" type="button">Forecast</button>
+      </div>
+
+      <div id="prediction-status" class="fine"></div>
+      <div id="prediction-output" class="prediction-output"></div>
+    </section>
+
+    <section class="atlas-memory-panel panel">
+      <div class="atlas-memory-heading">
+        <div>
+          <p class="eyebrow">ATLAS MEMORY</p>
+          <h2>Persistent topic and performance knowledge</h2>
+        </div>
+        <button id="atlas-memory-rebuild" type="button" class="small-button">
+          Rebuild Memory
+        </button>
+      </div>
+
+      <div class="atlas-memory-search">
+        <input
+          id="atlas-memory-query"
+          type="search"
+          placeholder="Search topics, categories, or channel patterns"
+        >
+        <button id="atlas-memory-search" type="button">Search</button>
+      </div>
+
+      <div id="atlas-memory-summary" class="atlas-memory-summary"></div>
+      <div id="atlas-memory-results" class="atlas-memory-results"></div>
+    </section>
+
+    <section class="atlas-agents-panel panel">
+      <div class="atlas-agents-heading">
+        <div>
+          <p class="eyebrow">ATLAS AGENTS</p>
+          <h2>Research, production, thumbnail, publishing, and strategy</h2>
+        </div>
+      </div>
+
+      <div class="atlas-agents-form">
+        <input id="atlas-agent-topic" type="text" placeholder="Enter a topic">
+        <button id="atlas-run-research" type="button">Research</button>
+        <button id="atlas-run-producer" type="button">Producer</button>
+        <button id="atlas-run-thumbnail" type="button">Thumbnail</button>
+        <button id="atlas-run-strategy" type="button">What Should I Make Next?</button>
+      </div>
+
+      <div id="atlas-agent-status" class="fine"></div>
+      <div id="atlas-agent-output" class="atlas-agent-output"></div>
     </section>
 
     <section class="atlas-panel panel">

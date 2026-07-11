@@ -10,7 +10,7 @@ class Settings:
     projects_dir: Path
     static_dir: Path
     app_name: str = "Mind Frontier Studio"
-    version: str = "19.0.0-youtube-sync"
+    version: str = "27.0.0-autonomous-orchestrator"
 
 
 ROOT = Path(__file__).resolve().parents[2]

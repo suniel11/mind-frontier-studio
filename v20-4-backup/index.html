@@ -1,0 +1,381 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Mind Frontier Studio</title>
+  <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+  <main class="shell">
+    <header>
+      <p class="eyebrow">MIND FRONTIER</p>
+      <h1>Studio YouTube Sync</h1>
+      <p class="lead">Turn one topic into a researched, narrated and rendered vertical Short.</p>
+    </header>
+
+    <section class="producer-panel panel">
+      <div class="producer-heading">
+        <div>
+          <p class="eyebrow">AI PRODUCER</p>
+          <h2 id="producer-greeting">Today's studio brief</h2>
+        </div>
+        <span id="producer-health-score" class="producer-score">—</span>
+      </div>
+
+      <div id="producer-recommendation" class="producer-recommendation">
+        <p class="fine">Loading producer recommendation…</p>
+      </div>
+
+      <div class="producer-analyzer">
+        <label for="producer-topic">Should I make this?</label>
+        <div class="producer-analyzer-row">
+          <input id="producer-topic" type="text" placeholder="Enter a topic or video idea">
+          <button id="analyze-topic" type="button">Analyze</button>
+        </div>
+        <div id="producer-analysis"></div>
+      </div>
+
+      <details class="producer-calendar-wrap">
+        <summary>View weekly content calendar</summary>
+        <div id="producer-calendar" class="producer-calendar"></div>
+      </details>
+    </section>
+
+    <form id="project-form" class="panel">
+      <label for="topic">Topic</label>
+      <textarea id="topic" rows="4" required placeholder="Why the fear of mediocrity keeps people stuck"></textarea>
+
+      <label for="seconds">Duration</label>
+      <select id="seconds">
+        <option value="30">30 seconds</option>
+        <option value="45" selected>45 seconds</option>
+        <option value="60">60 seconds</option>
+      </select>
+
+      <button id="generate" type="submit">Generate Video</button>
+      <p class="fine">This generates a script, narration, six AI images and an MP4. It uses your API balance.</p>
+    </form>
+
+    <section class="planner-panel panel">
+      <div class="planner-header">
+        <div>
+          <p class="eyebrow">CONTENT PLANNER</p>
+          <h2>What should Mind Frontier publish next?</h2>
+        </div>
+        <span class="planner-badge">No API cost</span>
+      </div>
+      <div id="content-ideas" class="content-ideas">
+        <p class="fine">Loading recommendations…</p>
+      </div>
+    </section>
+
+    <section class="youtube-sync-panel panel">
+      <div class="youtube-sync-heading">
+        <div>
+          <p class="eyebrow">YOUTUBE SYNC</p>
+          <h2>Channel connection</h2>
+        </div>
+        <span id="youtube-sync-state" class="youtube-sync-badge">Checking…</span>
+      </div>
+
+      <div id="youtube-sync-content">
+        <p class="fine">Checking YouTube connection…</p>
+      </div>
+
+      <div class="youtube-video-library">
+        <div class="youtube-library-heading">
+          <div>
+            <h3>YouTube Video Library</h3>
+            <p class="fine">Live uploads imported into Atlas.</p>
+          </div>
+          <button id="youtube-sync-videos" type="button" class="small-button">
+            Sync Videos
+          </button>
+        </div>
+
+        <div id="youtube-video-summary" class="youtube-video-summary"></div>
+
+        <div class="youtube-library-tools">
+          <input
+            id="youtube-video-search"
+            type="search"
+            placeholder="Search imported videos"
+          >
+          <select id="youtube-video-filter">
+            <option value="all">All videos</option>
+            <option value="shorts">Shorts</option>
+            <option value="long">Long-form</option>
+          </select>
+        </div>
+
+        <div id="youtube-video-list" class="youtube-video-list">
+          <p class="fine">Sync the channel to import videos.</p>
+        </div>
+      </div>
+
+
+      <div class="youtube-matching-panel">
+        <div class="youtube-library-heading">
+          <div>
+            <h3>Project Matching</h3>
+            <p class="fine">
+              Link Studio projects to published YouTube videos.
+            </p>
+          </div>
+          <button id="youtube-auto-match" type="button" class="small-button">
+            Auto-Match High Confidence
+          </button>
+        </div>
+
+        <div id="youtube-match-summary" class="youtube-video-summary"></div>
+        <div id="youtube-match-list" class="youtube-match-list">
+          <p class="fine">Loading match suggestions…</p>
+        </div>
+      </div>
+
+    </section>
+
+    <section class="operations-panel panel">
+      <div class="operations-heading">
+        <div>
+          <p class="eyebrow">STUDIO OPERATIONS</p>
+          <h2>Health and diagnostics</h2>
+        </div>
+        <button id="operations-refresh" type="button" class="small-button">Run Checks</button>
+      </div>
+
+      <div id="operations-status" class="operations-status">
+        <p class="fine">Checking Studio health…</p>
+      </div>
+
+      <details class="operations-failures">
+        <summary>Recent pipeline failures</summary>
+        <div id="operations-failure-list"></div>
+      </details>
+    </section>
+
+    <section class="apollo-panel panel">
+      <div class="apollo-heading">
+        <div>
+          <p class="eyebrow">PROJECT APOLLO</p>
+          <h2>Batch production queues</h2>
+        </div>
+        <span class="apollo-badge">Sequential rendering</span>
+      </div>
+
+      <div class="apollo-form">
+        <input
+          id="apollo-objective"
+          type="text"
+          placeholder="Example: Produce 5 psychology Shorts for next week"
+        >
+        <select id="apollo-count">
+          <option value="3">3 videos</option>
+          <option value="5" selected>5 videos</option>
+          <option value="7">7 videos</option>
+          <option value="10">10 videos</option>
+        </select>
+        <button id="apollo-create" type="button">Create Queue</button>
+      </div>
+
+      <div id="apollo-status" class="fine"></div>
+      <div id="apollo-queue" class="apollo-queue"></div>
+    </section>
+
+    <section class="orion-panel panel">
+      <div class="orion-heading">
+        <div>
+          <p class="eyebrow">PROJECT ORION</p>
+          <h2>Autonomous production missions</h2>
+        </div>
+        <span class="orion-badge">Review before render</span>
+      </div>
+
+      <div class="orion-form">
+        <input
+          id="orion-objective"
+          type="text"
+          placeholder="Example: Build a 3-video series about identity and comparison"
+        >
+        <select id="orion-count">
+          <option value="1">1 video</option>
+          <option value="2">2 videos</option>
+          <option value="3" selected>3 videos</option>
+          <option value="4">4 videos</option>
+          <option value="5">5 videos</option>
+        </select>
+        <button id="orion-plan" type="button">Create Mission</button>
+      </div>
+
+      <div id="orion-status" class="fine"></div>
+      <div id="orion-mission" class="orion-mission"></div>
+    </section>
+
+    <section class="atlas-panel panel">
+      <div class="atlas-heading">
+        <div>
+          <p class="eyebrow">PROJECT ATLAS</p>
+          <h2>Production and channel intelligence</h2>
+        </div>
+        <button id="atlas-refresh" type="button" class="small-button">Sync Atlas</button>
+      </div>
+
+      <div id="atlas-summary" class="atlas-summary">
+        <div><span>Projects</span><strong>—</strong></div>
+        <div><span>Published</span><strong>—</strong></div>
+        <div><span>Avg. Quality</span><strong>—</strong></div>
+        <div><span>Avg. Cinema</span><strong>—</strong></div>
+        <div><span>Total Views</span><strong>—</strong></div>
+        <div><span>Avg. Retention</span><strong>—</strong></div>
+      </div>
+
+      <div class="atlas-grid">
+        <article class="atlas-card">
+          <h3>Evidence-based recommendations</h3>
+          <div id="atlas-recommendations"><p class="fine">Loading…</p></div>
+        </article>
+
+        <article class="atlas-card">
+          <h3>Topic distribution</h3>
+          <div id="atlas-topics" class="atlas-bars"></div>
+        </article>
+      </div>
+
+      <article class="atlas-card atlas-metrics-card">
+        <div>
+          <h3>Record YouTube metrics</h3>
+          <p class="fine">Add the latest Studio values for a published Short.</p>
+        </div>
+
+        <div class="atlas-form">
+          <select id="atlas-project"></select>
+          <input id="atlas-views" type="number" min="0" placeholder="Views">
+          <input id="atlas-likes" type="number" min="0" placeholder="Likes">
+          <input id="atlas-comments" type="number" min="0" placeholder="Comments">
+          <input id="atlas-subs" type="number" min="0" placeholder="Subscribers gained">
+          <input id="atlas-retention" type="number" min="0" step="0.1" placeholder="Average % viewed">
+          <input id="atlas-viewed" type="number" min="0" max="100" step="0.1" placeholder="Viewed vs swiped %">
+          <button id="atlas-save-metrics" type="button">Save Metrics</button>
+        </div>
+        <div id="atlas-metric-status" class="fine"></div>
+      </article>
+
+      <article class="atlas-card">
+        <h3>Project intelligence</h3>
+        <div id="atlas-project-table" class="atlas-project-table"></div>
+      </article>
+    </section>
+
+    <section class="dashboard-panel panel">
+      <div class="dashboard-heading">
+        <div>
+          <p class="eyebrow">PROJECT DASHBOARD</p>
+          <h2>Your production library</h2>
+        </div>
+        <button id="refresh-projects" type="button" class="small-button">Refresh</button>
+      </div>
+
+      <div id="studio-stats" class="studio-stats">
+        <div><span>Total</span><strong>—</strong></div>
+        <div><span>Ready</span><strong>—</strong></div>
+        <div><span>Published</span><strong>—</strong></div>
+        <div><span>Avg. Quality</span><strong>—</strong></div>
+      </div>
+
+      <div class="dashboard-tools">
+        <input id="project-search" type="search" placeholder="Search projects, topics, or status">
+        <select id="project-filter">
+          <option value="all">All projects</option>
+          <option value="ready">Ready</option>
+          <option value="published">Published</option>
+          <option value="draft">Draft</option>
+        </select>
+      </div>
+
+      <div id="project-list" class="project-list">
+        <p class="fine">Loading projects…</p>
+      </div>
+    </section>
+
+    <section id="status"></section>
+
+    <section id="result" class="panel" hidden>
+      <div class="result-head">
+        <div>
+          <p class="eyebrow">VIDEO CREATED</p>
+          <h2 id="title"></h2>
+        </div>
+      </div>
+
+      <video id="video" controls playsinline></video>
+      <a id="download" class="download" download>Download MP4</a>
+
+      <h3>Voiceover</h3>
+      <p id="voiceover" class="voiceover"></p>
+
+      <h3>Upload package</h3>
+      <p id="description"></p>
+      <p id="hashtags"></p>
+    </section>
+    <dialog id="project-workspace" class="workspace-dialog">
+      <div class="workspace-shell">
+        <div class="workspace-header">
+          <div>
+            <p class="eyebrow">PROJECT WORKSPACE</p>
+            <h2 id="workspace-title">Project</h2>
+          </div>
+          <button id="close-workspace" type="button" class="small-button">Close</button>
+        </div>
+
+        <div class="workspace-grid">
+          <section class="workspace-preview">
+            <video id="workspace-video" controls playsinline></video>
+            <img id="workspace-thumbnail" alt="Project thumbnail">
+          </section>
+
+          <aside class="workspace-summary">
+            <div class="summary-card">
+              <span>Status</span>
+              <strong id="workspace-status">—</strong>
+            </div>
+            <div class="summary-card">
+              <span>Quality</span>
+              <strong id="workspace-quality">—</strong>
+            </div>
+            <div class="summary-card">
+              <span>Topic</span>
+              <strong id="workspace-topic">—</strong>
+            </div>
+          </aside>
+        </div>
+
+        <div class="workspace-tabs">
+          <button type="button" class="workspace-tab active" data-tab="script">Script</button>
+          <button type="button" class="workspace-tab" data-tab="quality">Quality</button>
+          <button type="button" class="workspace-tab" data-tab="metadata">Metadata</button>
+          <button type="button" class="workspace-tab" data-tab="beats">Beat Map</button>
+          <button type="button" class="workspace-tab" data-tab="render">Render Graph</button>
+        </div>
+
+        <div class="workspace-content">
+          <section id="workspace-script" class="workspace-pane active"></section>
+          <section id="workspace-quality-pane" class="workspace-pane"></section>
+          <section id="workspace-metadata" class="workspace-pane"></section>
+          <section id="workspace-beats" class="workspace-pane"></section>
+          <section id="workspace-render" class="workspace-pane"></section>
+        </div>
+
+        <div class="workspace-actions">
+          <a id="workspace-download-video" class="small-button" download>Download Video</a>
+          <a id="workspace-download-thumbnail" class="small-button" download>Download Thumbnail</a>
+          <a id="workspace-download-metadata" class="small-button" download>Download Metadata</a>
+          <button id="workspace-copy-metadata" type="button" class="small-button">Copy Metadata</button>
+        </div>
+      </div>
+    </dialog>
+
+  </main>
+  <script src="/static/app.js"></script>
+</body>
+</html>
