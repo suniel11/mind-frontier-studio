@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Mind Frontier Studio</title>
+  <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+  <main class="shell">
+    <header>
+      <p class="eyebrow">MIND FRONTIER</p>
+      <h1>Studio v2</h1>
+      <p class="lead">Turn one topic into a researched, narrated and rendered vertical Short.</p>
+    </header>
+
+    <form id="project-form" class="panel">
+      <label for="topic">Topic</label>
+      <textarea id="topic" rows="4" required placeholder="Why the fear of mediocrity keeps people stuck"></textarea>
+
+      <label for="seconds">Duration</label>
+      <select id="seconds">
+        <option value="30">30 seconds</option>
+        <option value="45" selected>45 seconds</option>
+        <option value="60">60 seconds</option>
+      </select>
+
+      <button id="generate" type="submit">Generate Video</button>
+      <p class="fine">This generates a script, narration, six AI images and an MP4. It uses your API balance.</p>
+    </form>
+
+    <section id="status"></section>
+
+    <section id="result" class="panel" hidden>
+      <div class="result-head">
+        <div>
+          <p class="eyebrow">VIDEO CREATED</p>
+          <h2 id="title"></h2>
+        </div>
+      </div>
+
+      <video id="video" controls playsinline></video>
+      <a id="download" class="download" download>Download MP4</a>
+
+      <h3>Voiceover</h3>
+      <p id="voiceover" class="voiceover"></p>
+
+      <h3>Upload package</h3>
+      <p id="description"></p>
+      <p id="hashtags"></p>
+    </section>
+  </main>
+  <script src="/static/app.js"></script>
+</body>
+</html>

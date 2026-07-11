@@ -1,0 +1,156 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Mind Frontier Studio</title>
+  <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+  <main class="shell">
+    <header>
+      <p class="eyebrow">MIND FRONTIER</p>
+      <h1>Studio v10.5</h1>
+      <p class="lead">Turn one topic into a researched, narrated and rendered vertical Short.</p>
+    </header>
+
+    <form id="project-form" class="panel">
+      <label for="topic">Topic</label>
+      <textarea id="topic" rows="4" required placeholder="Why the fear of mediocrity keeps people stuck"></textarea>
+
+      <label for="seconds">Duration</label>
+      <select id="seconds">
+        <option value="30">30 seconds</option>
+        <option value="45" selected>45 seconds</option>
+        <option value="60">60 seconds</option>
+      </select>
+
+      <button id="generate" type="submit">Generate Video</button>
+      <p class="fine">This generates a script, narration, six AI images and an MP4. It uses your API balance.</p>
+    </form>
+
+    <section class="planner-panel panel">
+      <div class="planner-header">
+        <div>
+          <p class="eyebrow">CONTENT PLANNER</p>
+          <h2>What should Mind Frontier publish next?</h2>
+        </div>
+        <span class="planner-badge">No API cost</span>
+      </div>
+      <div id="content-ideas" class="content-ideas">
+        <p class="fine">Loading recommendations…</p>
+      </div>
+    </section>
+
+    <section class="dashboard-panel panel">
+      <div class="dashboard-heading">
+        <div>
+          <p class="eyebrow">PROJECT DASHBOARD</p>
+          <h2>Your production library</h2>
+        </div>
+        <button id="refresh-projects" type="button" class="small-button">Refresh</button>
+      </div>
+
+      <div id="studio-stats" class="studio-stats">
+        <div><span>Total</span><strong>—</strong></div>
+        <div><span>Ready</span><strong>—</strong></div>
+        <div><span>Published</span><strong>—</strong></div>
+        <div><span>Avg. Quality</span><strong>—</strong></div>
+      </div>
+
+      <div class="dashboard-tools">
+        <input id="project-search" type="search" placeholder="Search projects, topics, or status">
+        <select id="project-filter">
+          <option value="all">All projects</option>
+          <option value="ready">Ready</option>
+          <option value="published">Published</option>
+          <option value="draft">Draft</option>
+        </select>
+      </div>
+
+      <div id="project-list" class="project-list">
+        <p class="fine">Loading projects…</p>
+      </div>
+    </section>
+
+    <section id="status"></section>
+
+    <section id="result" class="panel" hidden>
+      <div class="result-head">
+        <div>
+          <p class="eyebrow">VIDEO CREATED</p>
+          <h2 id="title"></h2>
+        </div>
+      </div>
+
+      <video id="video" controls playsinline></video>
+      <a id="download" class="download" download>Download MP4</a>
+
+      <h3>Voiceover</h3>
+      <p id="voiceover" class="voiceover"></p>
+
+      <h3>Upload package</h3>
+      <p id="description"></p>
+      <p id="hashtags"></p>
+    </section>
+    <dialog id="project-workspace" class="workspace-dialog">
+      <div class="workspace-shell">
+        <div class="workspace-header">
+          <div>
+            <p class="eyebrow">PROJECT WORKSPACE</p>
+            <h2 id="workspace-title">Project</h2>
+          </div>
+          <button id="close-workspace" type="button" class="small-button">Close</button>
+        </div>
+
+        <div class="workspace-grid">
+          <section class="workspace-preview">
+            <video id="workspace-video" controls playsinline></video>
+            <img id="workspace-thumbnail" alt="Project thumbnail">
+          </section>
+
+          <aside class="workspace-summary">
+            <div class="summary-card">
+              <span>Status</span>
+              <strong id="workspace-status">—</strong>
+            </div>
+            <div class="summary-card">
+              <span>Quality</span>
+              <strong id="workspace-quality">—</strong>
+            </div>
+            <div class="summary-card">
+              <span>Topic</span>
+              <strong id="workspace-topic">—</strong>
+            </div>
+          </aside>
+        </div>
+
+        <div class="workspace-tabs">
+          <button type="button" class="workspace-tab active" data-tab="script">Script</button>
+          <button type="button" class="workspace-tab" data-tab="quality">Quality</button>
+          <button type="button" class="workspace-tab" data-tab="metadata">Metadata</button>
+          <button type="button" class="workspace-tab" data-tab="beats">Beat Map</button>
+          <button type="button" class="workspace-tab" data-tab="render">Render Graph</button>
+        </div>
+
+        <div class="workspace-content">
+          <section id="workspace-script" class="workspace-pane active"></section>
+          <section id="workspace-quality-pane" class="workspace-pane"></section>
+          <section id="workspace-metadata" class="workspace-pane"></section>
+          <section id="workspace-beats" class="workspace-pane"></section>
+          <section id="workspace-render" class="workspace-pane"></section>
+        </div>
+
+        <div class="workspace-actions">
+          <a id="workspace-download-video" class="small-button" download>Download Video</a>
+          <a id="workspace-download-thumbnail" class="small-button" download>Download Thumbnail</a>
+          <a id="workspace-download-metadata" class="small-button" download>Download Metadata</a>
+          <button id="workspace-copy-metadata" type="button" class="small-button">Copy Metadata</button>
+        </div>
+      </div>
+    </dialog>
+
+  </main>
+  <script src="/static/app.js"></script>
+</body>
+</html>

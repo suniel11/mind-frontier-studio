@@ -1,0 +1,9 @@
+.env
+.venv/
+__pycache__/
+*.pyc
+projects/*/
+!projects/.gitkeep
+client_secret.json
+.secrets/
+youtube-token.json

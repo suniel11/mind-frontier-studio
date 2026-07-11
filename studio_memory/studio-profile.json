@@ -1,0 +1,16 @@
+{
+  "preferred_motions": [
+    "dolly_in",
+    "pan_right",
+    "dolly_out"
+  ],
+  "preferred_visual_types": [
+    "character_action",
+    "character_detail",
+    "environment",
+    "environmental_hero"
+  ],
+  "minimum_quality_score": 85,
+  "samples": 8,
+  "average_quality_score": 92.4
+}
