@@ -75,10 +75,13 @@ def create_authorization_url(root: Path, redirect_uri: str) -> str:
             "client_secret.json was not found in the Studio root folder."
         )
 
+    code_verifier = secrets.token_urlsafe(64)
     flow = Flow.from_client_secrets_file(
         str(secret_file),
         scopes=SCOPES,
         redirect_uri=redirect_uri,
+        code_verifier=code_verifier,
+        autogenerate_code_verifier=False,
     )
 
     state = secrets.token_urlsafe(32)
@@ -94,6 +97,7 @@ def create_authorization_url(root: Path, redirect_uri: str) -> str:
             {
                 "state": returned_state,
                 "redirect_uri": redirect_uri,
+                "code_verifier": code_verifier,
             },
             indent=2,
         ),
@@ -110,15 +114,23 @@ def complete_authorization(
     saved = json.loads(state_path(root).read_text(encoding="utf-8"))
     expected_state = str(saved.get("state", ""))
     redirect_uri = str(saved.get("redirect_uri", ""))
+    code_verifier = str(saved.get("code_verifier", ""))
 
     if not expected_state or received_state != expected_state:
         raise ValueError("OAuth state validation failed.")
+
+    if not code_verifier:
+        raise ValueError(
+            "OAuth PKCE code verifier is missing. Start a fresh connection."
+        )
 
     flow = Flow.from_client_secrets_file(
         str(client_secret_path(root)),
         scopes=SCOPES,
         state=expected_state,
         redirect_uri=redirect_uri,
+        code_verifier=code_verifier,
+        autogenerate_code_verifier=False,
     )
     flow.fetch_token(authorization_response=authorization_response)
 
