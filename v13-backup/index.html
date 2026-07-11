@@ -10,37 +10,9 @@
   <main class="shell">
     <header>
       <p class="eyebrow">MIND FRONTIER</p>
-      <h1>Studio Apollo</h1>
+      <h1>Studio v10.5</h1>
       <p class="lead">Turn one topic into a researched, narrated and rendered vertical Short.</p>
     </header>
-
-    <section class="producer-panel panel">
-      <div class="producer-heading">
-        <div>
-          <p class="eyebrow">AI PRODUCER</p>
-          <h2 id="producer-greeting">Today's studio brief</h2>
-        </div>
-        <span id="producer-health-score" class="producer-score">—</span>
-      </div>
-
-      <div id="producer-recommendation" class="producer-recommendation">
-        <p class="fine">Loading producer recommendation…</p>
-      </div>
-
-      <div class="producer-analyzer">
-        <label for="producer-topic">Should I make this?</label>
-        <div class="producer-analyzer-row">
-          <input id="producer-topic" type="text" placeholder="Enter a topic or video idea">
-          <button id="analyze-topic" type="button">Analyze</button>
-        </div>
-        <div id="producer-analysis"></div>
-      </div>
-
-      <details class="producer-calendar-wrap">
-        <summary>View weekly content calendar</summary>
-        <div id="producer-calendar" class="producer-calendar"></div>
-      </details>
-    </section>
 
     <form id="project-form" class="panel">
       <label for="topic">Topic</label>
@@ -68,118 +40,6 @@
       <div id="content-ideas" class="content-ideas">
         <p class="fine">Loading recommendations…</p>
       </div>
-    </section>
-
-    <section class="apollo-panel panel">
-      <div class="apollo-heading">
-        <div>
-          <p class="eyebrow">PROJECT APOLLO</p>
-          <h2>Batch production queues</h2>
-        </div>
-        <span class="apollo-badge">Sequential rendering</span>
-      </div>
-
-      <div class="apollo-form">
-        <input
-          id="apollo-objective"
-          type="text"
-          placeholder="Example: Produce 5 psychology Shorts for next week"
-        >
-        <select id="apollo-count">
-          <option value="3">3 videos</option>
-          <option value="5" selected>5 videos</option>
-          <option value="7">7 videos</option>
-          <option value="10">10 videos</option>
-        </select>
-        <button id="apollo-create" type="button">Create Queue</button>
-      </div>
-
-      <div id="apollo-status" class="fine"></div>
-      <div id="apollo-queue" class="apollo-queue"></div>
-    </section>
-
-    <section class="orion-panel panel">
-      <div class="orion-heading">
-        <div>
-          <p class="eyebrow">PROJECT ORION</p>
-          <h2>Autonomous production missions</h2>
-        </div>
-        <span class="orion-badge">Review before render</span>
-      </div>
-
-      <div class="orion-form">
-        <input
-          id="orion-objective"
-          type="text"
-          placeholder="Example: Build a 3-video series about identity and comparison"
-        >
-        <select id="orion-count">
-          <option value="1">1 video</option>
-          <option value="2">2 videos</option>
-          <option value="3" selected>3 videos</option>
-          <option value="4">4 videos</option>
-          <option value="5">5 videos</option>
-        </select>
-        <button id="orion-plan" type="button">Create Mission</button>
-      </div>
-
-      <div id="orion-status" class="fine"></div>
-      <div id="orion-mission" class="orion-mission"></div>
-    </section>
-
-    <section class="atlas-panel panel">
-      <div class="atlas-heading">
-        <div>
-          <p class="eyebrow">PROJECT ATLAS</p>
-          <h2>Production and channel intelligence</h2>
-        </div>
-        <button id="atlas-refresh" type="button" class="small-button">Sync Atlas</button>
-      </div>
-
-      <div id="atlas-summary" class="atlas-summary">
-        <div><span>Projects</span><strong>—</strong></div>
-        <div><span>Published</span><strong>—</strong></div>
-        <div><span>Avg. Quality</span><strong>—</strong></div>
-        <div><span>Avg. Cinema</span><strong>—</strong></div>
-        <div><span>Total Views</span><strong>—</strong></div>
-        <div><span>Avg. Retention</span><strong>—</strong></div>
-      </div>
-
-      <div class="atlas-grid">
-        <article class="atlas-card">
-          <h3>Evidence-based recommendations</h3>
-          <div id="atlas-recommendations"><p class="fine">Loading…</p></div>
-        </article>
-
-        <article class="atlas-card">
-          <h3>Topic distribution</h3>
-          <div id="atlas-topics" class="atlas-bars"></div>
-        </article>
-      </div>
-
-      <article class="atlas-card atlas-metrics-card">
-        <div>
-          <h3>Record YouTube metrics</h3>
-          <p class="fine">Add the latest Studio values for a published Short.</p>
-        </div>
-
-        <div class="atlas-form">
-          <select id="atlas-project"></select>
-          <input id="atlas-views" type="number" min="0" placeholder="Views">
-          <input id="atlas-likes" type="number" min="0" placeholder="Likes">
-          <input id="atlas-comments" type="number" min="0" placeholder="Comments">
-          <input id="atlas-subs" type="number" min="0" placeholder="Subscribers gained">
-          <input id="atlas-retention" type="number" min="0" step="0.1" placeholder="Average % viewed">
-          <input id="atlas-viewed" type="number" min="0" max="100" step="0.1" placeholder="Viewed vs swiped %">
-          <button id="atlas-save-metrics" type="button">Save Metrics</button>
-        </div>
-        <div id="atlas-metric-status" class="fine"></div>
-      </article>
-
-      <article class="atlas-card">
-        <h3>Project intelligence</h3>
-        <div id="atlas-project-table" class="atlas-project-table"></div>
-      </article>
     </section>
 
     <section class="dashboard-panel panel">

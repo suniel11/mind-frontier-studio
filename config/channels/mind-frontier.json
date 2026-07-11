@@ -1,0 +1,24 @@
+{
+  "id": "mind-frontier",
+  "name": "Mind Frontier",
+  "category": "Education",
+  "language": "English",
+  "audience": "Not made for kids",
+  "playlist": "Mind Frontier Originals",
+  "default_hashtags": [
+    "MindFrontier",
+    "Psychology",
+    "Philosophy",
+    "SelfImprovement"
+  ],
+  "default_tags": [
+    "mind frontier",
+    "psychology documentary",
+    "philosophy short",
+    "self improvement",
+    "human behavior",
+    "deep thoughts"
+  ],
+  "watermark": "assets/watermark.png",
+  "visibility": "private"
+}

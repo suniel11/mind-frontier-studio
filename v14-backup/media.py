@@ -15,7 +15,6 @@ from app.services.openai_client import client
 from app.services.audio import master_audio
 from app.models import Storyboard, ShortScript
 from app.director.captions import semantic_phrases
-from app.cinema.motion import compose_motion_filter
 from app.rendering.graph import RenderGraph
 
 WIDTH = 1080
@@ -170,12 +169,11 @@ def _render_scene_clip(
     is_last: bool = False,
 ):
     frames = max(1, round(duration * FPS))
-    filter_graph = compose_motion_filter(
-        scene=scene,
-        frames=frames,
-        fps=FPS,
-        width=WIDTH,
-        height=HEIGHT,
+    filter_graph = _motion_filter(
+        scene,
+        frames,
+        is_first=is_first,
+        is_last=is_last,
     )
 
     command = [

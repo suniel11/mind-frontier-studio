@@ -75,13 +75,6 @@ class Scene(BaseModel):
     visual_emotion: str = "reflective"
     caption_emphasis: str = ""
 
-    lens_mm: int = 50
-    composition: str = ""
-    lighting_style: str = ""
-    color_tone: str = ""
-    focus_target: str = ""
-    film_look: str = ""
-
 class Storyboard(BaseModel):
     visual_memory: VisualMemory
     story_arc_summary: str
