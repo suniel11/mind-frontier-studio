@@ -19,6 +19,7 @@
       title: "Create & Plan",
       subtitle: "Generate videos and build evidence-backed production plans.",
       selectors: [
+        "#creative-director-panel",
         "#project-form",
         ".orchestrator-panel",
         ".producer-workspace-panel"

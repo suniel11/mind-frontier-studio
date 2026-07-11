@@ -11,7 +11,7 @@ from app.config import (
     OPENAI_TTS_MODEL,
     OPENAI_TTS_VOICE,
 )
-from app.services.openai_client import client
+from app.services.openai_client import get_openai_client
 from app.services.audio import master_audio
 from app.models import Storyboard, ShortScript
 from app.director.captions import semantic_phrases
@@ -37,7 +37,7 @@ def _font(size: int):
 
 
 def generate_voiceover(script: ShortScript, output_path: Path):
-    response = client.audio.speech.create(
+    response = get_openai_client().audio.speech.create(
         model=OPENAI_TTS_MODEL,
         voice=OPENAI_TTS_VOICE,
         input=script.voiceover,
@@ -51,7 +51,7 @@ def generate_voiceover(script: ShortScript, output_path: Path):
 
 
 def generate_scene_image(prompt: str, output_path: Path):
-    result = client.images.generate(
+    result = get_openai_client().images.generate(
         model=OPENAI_IMAGE_MODEL,
         prompt=(
             prompt

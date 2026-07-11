@@ -13,6 +13,3 @@ PORT = int(os.getenv("PORT", "8000"))
 MUSIC_ENABLED = os.getenv("MUSIC_ENABLED", "true").strip().lower() in {"1", "true", "yes", "on"}
 MUSIC_VOLUME = float(os.getenv("MUSIC_VOLUME", "0.16"))
 MUSIC_TRACK = os.getenv("MUSIC_TRACK", "").strip()
-
-if not OPENAI_API_KEY or "put_your" in OPENAI_API_KEY:
-    raise RuntimeError("OPENAI_API_KEY is missing. Add it to the .env file.")
