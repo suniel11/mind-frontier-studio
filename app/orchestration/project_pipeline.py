@@ -21,6 +21,9 @@ from app.operations.telemetry import PipelineTelemetry
 from app.producer.review import review_script
 from app.producer_ai.reviewer import assess_topic
 from app.production.pipeline import compile_storyboard_prompts
+from app.production.preference_resolver import resolve_preferences
+from app.production.report import save_production_report
+from app.production.validation import validate_production
 from app.production.voice_timing import synthesize_narration
 from app.publishing.assistant import build_publish_package
 from app.publishing.manifest import write_release_manifest
@@ -29,7 +32,7 @@ from app.publishing.release import build_release_package
 from app.publishing.thumbnail import choose_thumbnail_source, create_thumbnail
 from app.quality.inspector import inspect_project
 from app.services.audio import probe_duration
-from app.services.media import build_video, generate_voiceover, voice_for_character
+from app.services.media import build_video, gender_for_voice, generate_voiceover, voice_for_character
 from app.services.project_store import make_project_id, save_project
 from app.visual.pipeline import apply_visual_storytelling
 
@@ -58,7 +61,13 @@ def create_project_pipeline(
     cancellation_check: Callable[[], bool] | None = None,
 ) -> ProjectOutput:
     project_id = project_id or make_project_id(request.topic)
-    specification = request.production_specification
+    # Single source of truth for the whole run: explicit prompt instructions
+    # (priority 1) reconciled over whatever the Creative Director's
+    # structured specification already set (priority 2). Every downstream
+    # stage reads specification.preferences / specification.requires_character
+    # instead of inventing its own default. ProjectRequest guarantees
+    # production_specification is always populated (see app/models.py).
+    specification = resolve_preferences(request.production_specification)
     telemetry = PipelineTelemetry(settings.root, project_id)
     project_dir = None
     success = False
@@ -103,7 +112,7 @@ def create_project_pipeline(
             script_result = script.run(
                 request.topic,
                 research_result,
-                request.target_seconds,
+                specification.target_seconds,
                 production_specification=specification,
             )
 
@@ -130,7 +139,7 @@ def create_project_pipeline(
         with tracked_stage("storyboard"):
             storyboard_result = storyboard.run(
                 script_result,
-                request.target_seconds,
+                specification.target_seconds,
                 character_result,
                 production_specification=specification,
             )
@@ -138,7 +147,7 @@ def create_project_pipeline(
         with tracked_stage("narrative_beats"):
             storyboard_result, narrative_beats = apply_narrative_beats(
                 storyboard_result,
-                request.target_seconds,
+                specification.target_seconds,
             )
 
         with tracked_stage("director"):
@@ -204,14 +213,16 @@ def create_project_pipeline(
             # copies this file in -- same path would make that copy a no-op
             # source==dest error.
             narration_audio_path = media_dir / "narration-source.mp3"
-            narrator_voice = voice_for_character(character_result)
+            narrator_voice = voice_for_character(character_result, preferences=specification.preferences)
             ffmpeg_exe = imageio_ffmpeg.get_ffmpeg_exe()
 
             script_result, narration_seconds = synthesize_narration(
                 script_result,
-                request.target_seconds,
+                specification.target_seconds,
                 narration_audio_path,
-                synthesize=lambda s, path: generate_voiceover(s, path, voice=narrator_voice),
+                synthesize=lambda s, path: generate_voiceover(
+                    s, path, voice=narrator_voice, preferences=specification.preferences
+                ),
                 probe_duration=lambda path: probe_duration(ffmpeg_exe, path),
                 resize_script=script.resize,
             )
@@ -227,6 +238,8 @@ def create_project_pipeline(
                 script_result,
                 storyboard_result,
                 narration_audio_path=narration_audio_path,
+                preferences=specification.preferences,
+                aspect_ratio=specification.aspect_ratio,
             )
             output.video_url = f"/projects/{project_id}/{video_path.name}"
 
@@ -237,6 +250,23 @@ def create_project_pipeline(
                 character_bible=character_result,
                 requires_character=requires_character_bible(specification),
             )
+
+            # Requested-vs-actual validation: never silently replaces a
+            # preference, only records whether the final production actually
+            # matched what was asked for.
+            validation_report = validate_production(
+                specification,
+                actual_duration_seconds=narration_seconds,
+                narrator_voice=narrator_voice,
+                narrator_gender_actual=gender_for_voice(narrator_voice),
+                character_bible=character_result,
+                aspect_ratio_actual=specification.aspect_ratio,
+            )
+            save_production_report(project_dir, validation_report)
+            # Surface mismatches on the output itself -- never silently
+            # substituted, always visible to whoever reads the project.
+            output.warnings.extend(validation_report.warnings)
+
             quality_report_path = project_dir / "quality-report.json"
             quality_report_path.write_text(
                 json.dumps(quality_result.model_dump(), indent=2),

@@ -117,12 +117,16 @@ def master_audio(
     narration_path: Path,
     output_path: Path,
     project_dir: Path,
+    music_enabled: bool | None = None,
 ) -> Path:
     ffmpeg = imageio_ffmpeg.get_ffmpeg_exe()
     duration = _probe_duration(ffmpeg, narration_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
-    if not MUSIC_ENABLED:
+    # An explicit per-project preference overrides the global config default.
+    effective_music_enabled = MUSIC_ENABLED if music_enabled is None else music_enabled
+
+    if not effective_music_enabled:
         command = [
             ffmpeg,
             "-y",

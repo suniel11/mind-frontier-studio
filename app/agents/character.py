@@ -40,6 +40,28 @@ directly to keep the character identical across scenes.
 """
 
 
+def _presenter_constraints(production_specification: "ProductionSpecification | None") -> str:
+    presenter = getattr(getattr(production_specification, "preferences", None), "presenter", None)
+    if presenter is None:
+        return "None supplied."
+
+    lines = []
+    if presenter.gender:
+        lines.append(
+            f"- gender MUST be exactly \"{presenter.gender}\". This is an explicit "
+            "user instruction and overrides any other creative judgment."
+        )
+    if presenter.age:
+        lines.append(f"- age_range MUST reflect: {presenter.age}")
+    if presenter.appearance:
+        lines.append(f"- appearance MUST reflect: {presenter.appearance}")
+    if presenter.wardrobe:
+        lines.append(f"- wardrobe MUST reflect: {presenter.wardrobe}")
+    if presenter.continuity:
+        lines.append(f"- continuity_tags MUST include: {presenter.continuity}")
+    return "\n".join(lines) if lines else "None supplied."
+
+
 def run(
     script: ShortScript,
     production_specification: ProductionSpecification | None = None,
@@ -68,6 +90,10 @@ Voiceover:
 Character direction: {protagonist_direction}
 Visual style: {visual_style}
 Additional negative constraints: {negative_constraints or "None supplied"}
+
+Explicit user requirements for this character (these are direct user
+instructions and take priority over every other consideration below):
+{_presenter_constraints(production_specification)}
 
 The character should fit the subject without resembling a known person.
 Return a production-ready visual bible, including an explicit gender

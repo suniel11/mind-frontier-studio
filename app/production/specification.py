@@ -13,6 +13,8 @@ from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, field_validator
 
+from app.production.preferences import UserCreativePreferences
+
 
 ShortDirection = Annotated[
     str,
@@ -67,6 +69,16 @@ class ProductionSpecification(BaseModel):
         StringConstraints(strip_whitespace=True, min_length=1, max_length=12000),
     ] | None = None
 
+    # Single source of truth for every explicit creator preference (narrator,
+    # presenter, video, visuals, rendering). Populated by
+    # app.production.preference_resolver.resolve_preferences before the
+    # pipeline runs; downstream stages should read this instead of inventing
+    # their own defaults. aspect_ratio/target_seconds above remain the
+    # authoritative fields for those two (pre-existing) concepts -- the
+    # resolver reconciles preferences.video.aspect_ratio/runtime_seconds onto
+    # them rather than duplicating a second source of truth.
+    preferences: UserCreativePreferences = Field(default_factory=UserCreativePreferences)
+
     @field_validator("aspect_ratio", mode="before")
     @classmethod
     def normalize_aspect_ratio(cls, value: object) -> object:
@@ -102,6 +114,11 @@ class ProductionSpecification(BaseModel):
 
     @property
     def requires_character(self) -> bool:
+        # An explicit presenter preference (from the prompt or the Creative
+        # Director) always wins over the free-text protagonist_direction
+        # heuristic below.
+        if self.preferences.presenter.enabled is not None:
+            return self.preferences.presenter.enabled
         if not self.protagonist_direction:
             return False
         normalized = self.protagonist_direction.casefold()

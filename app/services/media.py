@@ -1,8 +1,10 @@
 import base64
+import logging
 import re
 import shutil
 import subprocess
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from PIL import Image, ImageFont
 import imageio_ffmpeg
@@ -19,10 +21,33 @@ from app.director.captions import semantic_phrases
 from app.cinema.motion import compose_motion_filter
 from app.rendering.graph import RenderGraph
 
+if TYPE_CHECKING:
+    from app.production.preferences import UserCreativePreferences
+
+logger = logging.getLogger(__name__)
+
 WIDTH = 1080
 HEIGHT = 1920
 FPS = 30
 TRANSITION_SECONDS = 0.32
+
+# Final render resolution and the closest OpenAI gpt-image-1 generation size
+# per aspect ratio. generate_scene_image() always crops/resizes to an exact
+# (width, height) target regardless of what the API returns, so choosing the
+# closest supported generation size only affects upscaling quality, not
+# correctness. "9:16" reproduces the historical WIDTH/HEIGHT constants
+# exactly so existing behavior is unchanged unless a different ratio is
+# explicitly requested.
+_ASPECT_RATIO_RESOLUTIONS: dict[str, tuple[int, int, str]] = {
+    "9:16": (1080, 1920, "1024x1536"),
+    "16:9": (1920, 1080, "1536x1024"),
+    "1:1": (1080, 1080, "1024x1024"),
+    "4:5": (1080, 1350, "1024x1536"),
+}
+
+
+def resolution_for_aspect_ratio(aspect_ratio: str | None) -> tuple[int, int, str]:
+    return _ASPECT_RATIO_RESOLUTIONS.get(aspect_ratio or "9:16", _ASPECT_RATIO_RESOLUTIONS["9:16"])
 
 
 def _font(size: int):
@@ -44,42 +69,129 @@ MALE_VOICES = ("onyx", "echo")
 FEMALE_VOICES = ("nova", "shimmer")
 
 
-def voice_for_character(character_bible, default_voice: str = OPENAI_TTS_VOICE) -> str:
-    if character_bible is None:
-        return default_voice
-    gender = str(getattr(character_bible, "gender", "") or "").strip().casefold()
+def _normalize_gender(value: str | None) -> str | None:
+    gender = str(value or "").strip().casefold()
     if gender in {"male", "man", "masculine", "m"}:
-        return MALE_VOICES[0]
+        return "male"
     if gender in {"female", "woman", "feminine", "f"}:
-        return FEMALE_VOICES[0]
-    return default_voice
+        return "female"
+    return None
 
 
-def generate_voiceover(script: ShortScript, output_path: Path, voice: str = OPENAI_TTS_VOICE):
+def gender_for_voice(voice: str) -> str | None:
+    """Reverse lookup used by validation to confirm what gender a voice
+    selection actually resolved to."""
+
+    if voice in MALE_VOICES:
+        return "male"
+    if voice in FEMALE_VOICES:
+        return "female"
+    return None
+
+
+def voice_for_character(
+    character_bible,
+    preferences: "UserCreativePreferences | None" = None,
+    default_voice: str = OPENAI_TTS_VOICE,
+) -> str:
+    """Pick a narrator voice, honoring an explicit user request first.
+
+    Priority: an explicit ``preferences.narrator.gender`` (the user's own
+    words) always wins, even when no Character Bible exists (a video can
+    have a female narrator with no on-screen presenter). Only when the user
+    did not specify a gender does the Character Bible's gender apply, so a
+    presenter's on-screen appearance and the narrator agree by default.
+    """
+
+    explicit_gender = _normalize_gender(getattr(getattr(preferences, "narrator", None), "gender", None))
+    bible_gender = _normalize_gender(getattr(character_bible, "gender", None))
+    gender = explicit_gender or bible_gender
+
+    if gender == "male":
+        voice = MALE_VOICES[0]
+    elif gender == "female":
+        voice = FEMALE_VOICES[0]
+    else:
+        voice = default_voice
+
+    logger.info(
+        "Narrator voice selected: %s (gender=%s, source=%s)",
+        voice,
+        gender or "unspecified",
+        "explicit_preference" if explicit_gender else ("character_bible" if bible_gender else "default"),
+    )
+    return voice
+
+
+def _narrator_instructions(preferences: "UserCreativePreferences | None") -> str:
+    base = (
+        "Calm, thoughtful documentary narration. "
+        "Moderate pace, precise diction, restrained emotion. "
+        "Use subtle pauses after important ideas."
+    )
+    narrator = getattr(preferences, "narrator", None)
+    if narrator is None:
+        return base
+
+    overrides = []
+    if narrator.tone:
+        overrides.append(f"tone: {narrator.tone}")
+    if narrator.emotion:
+        overrides.append(f"emotion: {narrator.emotion}")
+    if narrator.voice_style:
+        overrides.append(f"voice style: {narrator.voice_style}")
+    if narrator.accent:
+        overrides.append(f"accent: {narrator.accent}")
+    if not overrides:
+        return base
+    return base + " Creator-specified direction takes priority: " + ", ".join(overrides) + "."
+
+
+def generate_voiceover(
+    script: ShortScript,
+    output_path: Path,
+    voice: str = OPENAI_TTS_VOICE,
+    preferences: "UserCreativePreferences | None" = None,
+):
+    speed = getattr(getattr(preferences, "narrator", None), "speaking_speed", None)
+    kwargs = {"speed": speed} if speed is not None else {}
     response = get_openai_client().audio.speech.create(
         model=OPENAI_TTS_MODEL,
         voice=voice,
         input=script.voiceover,
-        instructions=(
-            "Calm, thoughtful documentary narration. "
-            "Moderate pace, precise diction, restrained emotion. "
-            "Use subtle pauses after important ideas."
-        ),
+        instructions=_narrator_instructions(preferences),
+        **kwargs,
     )
     output_path.write_bytes(response.read())
 
 
-def generate_scene_image(prompt: str, output_path: Path):
+_ASPECT_RATIO_LABELS = {
+    "9:16": "Portrait 9:16",
+    "16:9": "Landscape 16:9",
+    "1:1": "Square 1:1",
+    "4:5": "Portrait 4:5",
+}
+
+
+def generate_scene_image(
+    prompt: str,
+    output_path: Path,
+    width: int = WIDTH,
+    height: int = HEIGHT,
+    size: str = "1024x1536",
+    aspect_ratio: str = "9:16",
+):
     result = get_openai_client().images.generate(
         model=OPENAI_IMAGE_MODEL,
         prompt=(
             prompt
-            + "\nPortrait 9:16 composition, cinematic documentary style, "
+            + f"\n{_ASPECT_RATIO_LABELS.get(aspect_ratio, 'Portrait 9:16')} composition, "
+              "cinematic documentary style, "
               "dark neutral palette, subtle warm highlights, realistic lighting, "
               "consistent fictional character identity when a recurring protagonist appears, "
               "no text, no logo, no watermark."
         ),
-        size="1024x1536",
+        size=size,
         quality="low",
     )
 
@@ -93,14 +205,14 @@ def generate_scene_image(prompt: str, output_path: Path):
     temp.write_bytes(raw)
 
     with Image.open(temp).convert("RGB") as image:
-        ratio = max(WIDTH / image.width, HEIGHT / image.height)
+        ratio = max(width / image.width, height / image.height)
         resized = image.resize(
             (int(image.width * ratio), int(image.height * ratio)),
             Image.Resampling.LANCZOS,
         )
-        left = (resized.width - WIDTH) // 2
-        top = (resized.height - HEIGHT) // 2
-        final = resized.crop((left, top, left + WIDTH, top + HEIGHT))
+        left = (resized.width - width) // 2
+        top = (resized.height - height) // 2
+        final = resized.crop((left, top, left + width, top + height))
         final.save(output_path, quality=92)
 
     temp.unlink(missing_ok=True)
@@ -187,14 +299,16 @@ def _render_scene_clip(
     duration: float,
     is_first: bool = False,
     is_last: bool = False,
+    width: int = WIDTH,
+    height: int = HEIGHT,
 ):
     frames = max(1, round(duration * FPS))
     filter_graph = compose_motion_filter(
         scene=scene,
         frames=frames,
         fps=FPS,
-        width=WIDTH,
-        height=HEIGHT,
+        width=width,
+        height=height,
     )
 
     command = [
@@ -315,20 +429,29 @@ def _highlight_phrase(phrase: str) -> str:
     return " ".join(rendered)
 
 
-def _write_dynamic_captions(storyboard: Storyboard, output_path: Path):
-    header = r"""[Script Info]
+def _write_dynamic_captions(storyboard: Storyboard, output_path: Path, width: int = WIDTH, height: int = HEIGHT):
+    # Margins were tuned for the 1080x1920 default; scale them proportionally
+    # to height so captions land in a sensible place at other aspect ratios
+    # instead of being positioned for a video half again as tall.
+    scale = height / HEIGHT
+    margin_standard = round(330 * scale)
+    margin_top = round(280 * scale)
+    margin_hook = round(300 * scale)
+    margin_hook_top = round(250 * scale)
+
+    header = f"""[Script Info]
 ScriptType: v4.00+
-PlayResX: 1080
-PlayResY: 1920
+PlayResX: {width}
+PlayResY: {height}
 WrapStyle: 2
 ScaledBorderAndShadow: yes
 
 [V4+ Styles]
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-Style: Dynamic,Arial,72,&H00FFFFFF,&H00FFFFFF,&H00101010,&H96000000,-1,0,0,0,100,100,0,0,3,3,0,2,100,100,330,1
-Style: DynamicTop,Arial,72,&H00FFFFFF,&H00FFFFFF,&H00101010,&H96000000,-1,0,0,0,100,100,0,0,3,3,0,8,100,100,280,1
-Style: Hook,Arial,84,&H00FFFFFF,&H00FFFFFF,&H00101010,&HA0000000,-1,0,0,0,100,100,0,0,3,4,0,2,90,90,300,1
-Style: HookTop,Arial,84,&H00FFFFFF,&H00FFFFFF,&H00101010,&HA0000000,-1,0,0,0,100,100,0,0,3,4,0,8,90,90,250,1
+Style: Dynamic,Arial,72,&H00FFFFFF,&H00FFFFFF,&H00101010,&H96000000,-1,0,0,0,100,100,0,0,3,3,0,2,100,100,{margin_standard},1
+Style: DynamicTop,Arial,72,&H00FFFFFF,&H00FFFFFF,&H00101010,&H96000000,-1,0,0,0,100,100,0,0,3,3,0,8,100,100,{margin_top},1
+Style: Hook,Arial,84,&H00FFFFFF,&H00FFFFFF,&H00101010,&HA0000000,-1,0,0,0,100,100,0,0,3,4,0,2,90,90,{margin_hook},1
+Style: HookTop,Arial,84,&H00FFFFFF,&H00FFFFFF,&H00101010,&HA0000000,-1,0,0,0,100,100,0,0,3,4,0,8,90,90,{margin_hook_top},1
 
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
@@ -439,6 +562,10 @@ def render_video(
     images: list[Path],
     audio_path: Path,
     output_path: Path,
+    width: int = WIDTH,
+    height: int = HEIGHT,
+    subtitles: bool = True,
+    background_music: bool | None = None,
 ):
     ffmpeg = imageio_ffmpeg.get_ffmpeg_exe()
     clips_dir = output_path.parent / "scene-clips"
@@ -457,23 +584,28 @@ def render_video(
             duration=duration,
             is_first=index == 0,
             is_last=index == total_scenes - 1,
+            width=width,
+            height=height,
         )
         clips.append(clip_path)
 
     silent_video = output_path.parent / "silent-video.mp4"
     _concat_scene_clips(ffmpeg, clips, silent_video)
 
-    captions_file = output_path.parent / "dynamic-captions.ass"
-    _write_dynamic_captions(storyboard, captions_file)
-
-    captioned_video = output_path.parent / "captioned-video.mp4"
-    _burn_captions(ffmpeg, silent_video, captions_file, captioned_video)
+    if subtitles:
+        captions_file = output_path.parent / "dynamic-captions.ass"
+        _write_dynamic_captions(storyboard, captions_file, width=width, height=height)
+        captioned_video = output_path.parent / "captioned-video.mp4"
+        _burn_captions(ffmpeg, silent_video, captions_file, captioned_video)
+    else:
+        captioned_video = silent_video
 
     mastered_audio = output_path.parent / "mastered-audio.m4a"
     master_audio(
         narration_path=audio_path,
         output_path=mastered_audio,
         project_dir=output_path.parent,
+        music_enabled=background_music,
     )
 
     _mux_audio(ffmpeg, captioned_video, mastered_audio, output_path)
@@ -484,6 +616,8 @@ def build_video(
     script: ShortScript,
     storyboard: Storyboard,
     narration_audio_path: Path | None = None,
+    preferences: "UserCreativePreferences | None" = None,
+    aspect_ratio: str = "9:16",
 ) -> Path:
     graph = RenderGraph(project_dir)
     graph.mark("storyboard", "ready", detail=f"{len(storyboard.scenes)} scenes")
@@ -498,19 +632,42 @@ def build_video(
         # instead of generating a second, untimed narration here.
         shutil.copyfile(narration_audio_path, audio_path)
     else:
-        generate_voiceover(script, audio_path)
+        generate_voiceover(script, audio_path, preferences=preferences)
     graph.mark("voiceover", "complete", output=str(audio_path))
+
+    resolved_aspect_ratio = getattr(getattr(preferences, "video", None), "aspect_ratio", None) or aspect_ratio
+    width, height, image_size = resolution_for_aspect_ratio(resolved_aspect_ratio)
 
     images = []
     for scene in storyboard.scenes:
         image_path = media_dir / f"scene-{scene.number:02d}.jpg"
-        generate_scene_image(scene.image_prompt, image_path)
+        generate_scene_image(
+            scene.image_prompt,
+            image_path,
+            width=width,
+            height=height,
+            size=image_size,
+            aspect_ratio=resolved_aspect_ratio,
+        )
         images.append(image_path)
 
     graph.mark("images", "complete", detail=f"{len(images)} images")
 
+    rendering = getattr(preferences, "rendering", None)
+    subtitles = True if rendering is None or rendering.subtitles is None else rendering.subtitles
+    background_music = None if rendering is None else rendering.background_music
+
     video_path = project_dir / "mind-frontier-short.mp4"
     graph.mark("render", "started")
-    render_video(storyboard, images, audio_path, video_path)
+    render_video(
+        storyboard,
+        images,
+        audio_path,
+        video_path,
+        width=width,
+        height=height,
+        subtitles=subtitles,
+        background_music=background_music,
+    )
     graph.mark("render", "complete", output=str(video_path))
     return video_path

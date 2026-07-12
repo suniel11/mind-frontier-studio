@@ -136,12 +136,29 @@ def _requires_character(production_specification) -> bool:
     return bool(getattr(production_specification, "requires_character", False))
 
 
-def _candidate_order(scene, allow_character: bool) -> list[str]:
+def _visual_preference_boosts(production_specification) -> tuple[str, ...]:
+    # Explicit creator preferences (priority 1/2) outrank content-signal
+    # detection: if the user asked for diagrams/scientific/archival visuals,
+    # that request should lead the ranking, not just contribute a tiebreak.
+    visuals = getattr(getattr(production_specification, "preferences", None), "visuals", None)
+    if visuals is None:
+        return ()
+    boosts = []
+    if visuals.diagrams or visuals.scientific_visuals:
+        boosts.append("process_diagram")
+    if visuals.archival_visuals:
+        boosts.append("document_or_archive")
+    return tuple(boosts)
+
+
+def _candidate_order(scene, allow_character: bool, production_specification=None) -> list[str]:
     text = _scene_text(scene)
     content = _content_scores(text)
     role_prior = _ROLE_PRIORS.get(_role_key(scene), _DEFAULT_ROLE_PRIOR)
+    preference_boosts = _visual_preference_boosts(production_specification)
 
-    ranked = sorted(content, key=lambda key: content[key], reverse=True)
+    content_ranked = sorted(content, key=lambda key: content[key], reverse=True)
+    ranked = list(preference_boosts) + [c for c in content_ranked if c not in preference_boosts]
     for category in role_prior:
         if category not in ranked:
             ranked.append(category)
@@ -194,7 +211,7 @@ def plan_shots(storyboard, production_specification=None) -> list[ShotDecision]:
     decisions: list[ShotDecision] = []
     for scene in scenes:
         allow_character = character_used < character_budget
-        ordered = _candidate_order(scene, allow_character)
+        ordered = _candidate_order(scene, allow_character, production_specification)
         visual_type = _select_category(decisions, ordered, len(scenes))
 
         if resolve_category(visual_type).requires_character:

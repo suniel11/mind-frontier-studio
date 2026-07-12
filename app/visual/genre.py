@@ -76,5 +76,14 @@ def classify_genre(specification) -> str:
 
 
 def presenter_frequency_cap(specification) -> float:
+    # An explicit creator preference (priority 1/2) always wins over the
+    # inferred genre default (priority 4).
+    explicit = getattr(
+        getattr(getattr(specification, "preferences", None), "visuals", None),
+        "presenter_frequency",
+        None,
+    )
+    if explicit is not None:
+        return explicit
     genre = classify_genre(specification)
     return PRESENTER_FREQUENCY_CAPS.get(genre, PRESENTER_FREQUENCY_CAPS["general"])
