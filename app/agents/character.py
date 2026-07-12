@@ -2,8 +2,10 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from app.model_router.execution import run_agent_stage
+from app.model_router.quality_checks import character_validator
+from app.model_router.stages import Stage
 from app.models import CharacterBible, ShortScript
-from app.services.openai_client import structured_response
 
 if TYPE_CHECKING:
     from app.production.specification import ProductionSpecification
@@ -77,7 +79,10 @@ def run(
         "negative_constraints",
         [],
     )
-    return structured_response(
+    presenter = getattr(getattr(production_specification, "preferences", None), "presenter", None)
+    expected_gender = getattr(presenter, "gender", None)
+    return run_agent_stage(
+        Stage.CHARACTER,
         instructions=INSTRUCTIONS,
         prompt=f"""
 Create the recurring visual character requested for this production:
@@ -100,4 +105,5 @@ Return a production-ready visual bible, including an explicit gender
 ("male" or "female") that a text-to-speech voice will be selected to match.
 """,
         schema=CharacterBible,
-    )
+        validate=character_validator(expected_gender=expected_gender),
+    ).output

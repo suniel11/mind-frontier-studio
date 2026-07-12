@@ -2,8 +2,10 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from app.models import ShortScript, SeoPackage
-from app.services.openai_client import structured_response
+from app.model_router.execution import run_agent_stage
+from app.model_router.quality_checks import seo_validator
+from app.model_router.stages import Stage
+from app.models import SeoPackage, ShortScript
 
 if TYPE_CHECKING:
     from app.production.specification import ProductionSpecification
@@ -24,7 +26,8 @@ def run(
     audience = getattr(production_specification, "audience", None) or "the intended audience"
     output_format = getattr(production_specification, "output_format", None) or "video"
     channel_id = getattr(production_specification, "channel_id", None) or "default channel"
-    return structured_response(
+    return run_agent_stage(
+        Stage.SEO,
         instructions=INSTRUCTIONS,
         prompt=f'''
 Script:
@@ -37,4 +40,5 @@ Channel: {channel_id}
 Create a distribution-ready title, a two-sentence description, and 3-5 hashtags.
 ''',
         schema=SeoPackage,
-    )
+        validate=seo_validator(),
+    ).output

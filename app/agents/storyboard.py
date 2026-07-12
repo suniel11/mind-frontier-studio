@@ -3,9 +3,11 @@ from __future__ import annotations
 import json
 from typing import TYPE_CHECKING
 
+from app.model_router.execution import run_agent_stage
+from app.model_router.quality_checks import storyboard_validator
+from app.model_router.stages import Stage
 from app.models import CharacterBible, ShortScript, Storyboard
 from app.narrative.duration_planning import scenes_for_duration
-from app.services.openai_client import structured_response
 
 if TYPE_CHECKING:
     from app.production.specification import ProductionSpecification
@@ -84,7 +86,8 @@ def run(
     production_specification: ProductionSpecification | None = None,
 ) -> Storyboard:
     scene_count = scenes_for_duration(target_seconds)
-    return structured_response(
+    return run_agent_stage(
+        Stage.STORYBOARD,
         instructions=INSTRUCTIONS,
         prompt=f"""
 Target duration: {target_seconds} seconds
@@ -135,4 +138,5 @@ Use the strongest composition in scene 1, vary motion deliberately, and keep the
 six scenes coherent without forcing a documentary aesthetic or human subject.
 """,
         schema=Storyboard,
-    )
+        validate=storyboard_validator(target_seconds=target_seconds),
+    ).output

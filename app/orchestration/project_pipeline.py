@@ -13,6 +13,8 @@ from app.core.settings import settings
 from app.director.engine import apply_director_engine
 from app.learning.memory import record_project
 from app.learning.profile import load_studio_profile, save_studio_profile
+from app.model_router.project_state import start_project as start_model_routing_project
+from app.model_router.usage import save_model_usage
 from app.models import ProjectOutput, ProjectRequest
 from app.narration.report import build_narration_report, save_narration_report
 from app.narration.voice_selection import select_voice
@@ -63,6 +65,10 @@ def create_project_pipeline(
     cancellation_check: Callable[[], bool] | None = None,
 ) -> ProjectOutput:
     project_id = project_id or make_project_id(request.topic)
+    # Cost-aware model routing (app.model_router) is scoped to this run via
+    # a contextvar so research/script/storyboard/character/seo can resolve
+    # their model and report usage without any signature changes.
+    start_model_routing_project(project_id)
     # Single source of truth for the whole run: explicit prompt instructions
     # (priority 1) reconciled over whatever the Creative Director's
     # structured specification already set (priority 2). Every downstream
@@ -201,6 +207,11 @@ def create_project_pipeline(
         with tracked_stage("project_storage"):
             project_dir = save_project(output)
             save_beat_map(project_dir, narrative_beats)
+            # Text-model usage (Phase 10) for every stage up to this point
+            # (research/script/character/storyboard/seo). Re-saved at
+            # final_save too in case a later stage (e.g. a runtime script
+            # resize during voice_generation) adds more calls.
+            save_model_usage(project_dir, project_id)
             save_cinema_report(project_dir, cinema_report)
 
         with tracked_stage("voice_generation"):
@@ -328,6 +339,7 @@ def create_project_pipeline(
 
         with tracked_stage("final_save"):
             save_project(output)
+            save_model_usage(project_dir, project_id)
 
         success = True
         return output

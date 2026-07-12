@@ -3,8 +3,10 @@ from __future__ import annotations
 import json
 from typing import TYPE_CHECKING
 
+from app.model_router.execution import run_agent_stage
+from app.model_router.quality_checks import script_validator
+from app.model_router.stages import Stage
 from app.models import ResearchBrief, ShortScript
-from app.services.openai_client import structured_response
 
 if TYPE_CHECKING:
     from app.production.specification import ProductionSpecification
@@ -52,7 +54,8 @@ def run(
     target_seconds: int,
     production_specification: ProductionSpecification | None = None,
 ) -> ShortScript:
-    return structured_response(
+    return run_agent_stage(
+        Stage.SCRIPT,
         instructions=INSTRUCTIONS,
         prompt=f'''
 Topic: {topic}
@@ -70,7 +73,8 @@ The hook must work in the first two seconds.
 The ending should follow the requested ending direction and feel conclusive rather than promotional.
 ''',
         schema=ShortScript,
-    )
+        validate=script_validator(target_seconds=target_seconds),
+    ).output
 
 
 RESIZE_INSTRUCTIONS = '''
@@ -93,7 +97,11 @@ def resize(script: ShortScript, target_words: int) -> ShortScript:
     narration happened to come out to.
     """
 
-    return structured_response(
+    # Corrective runtime rewrite -- routed through the same Stage.SCRIPT
+    # model tier as the original script (Phase 5: "corrective runtime script
+    # rewrite -> script model"), with the same baseline-quality fallback.
+    return run_agent_stage(
+        Stage.SCRIPT,
         instructions=RESIZE_INSTRUCTIONS,
         prompt=f'''
 Current script:
@@ -103,4 +111,5 @@ Rewrite the voiceover to approximately {target_words} words.
 Keep the title, hook, and ending direction consistent with the original.
 ''',
         schema=ShortScript,
-    )
+        validate=script_validator(target_seconds=round(target_words / 2.2)),
+    ).output
