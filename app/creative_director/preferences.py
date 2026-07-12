@@ -31,6 +31,9 @@ class CreatorPreferences(BaseModel):
     narration_style: PreferenceText | None = None
     caption_style: PreferenceText | None = None
     music_preference: PreferenceText | bool | None = None
+    narrator_gender: str | None = Field(default=None, pattern=r"^(male|female)$")
+    narrator_tone: PreferenceText | None = None
+    narrator_style: PreferenceText | None = None
 
     def populated(self) -> dict[str, object]:
         return self.model_dump(exclude_none=True)
@@ -90,6 +93,9 @@ class PreferenceStore:
             "narration_style": specification.narration_style,
             "caption_style": specification.caption_style,
             "music_preference": specification.music_direction,
+            "narrator_gender": specification.preferences.narrator.gender,
+            "narrator_tone": specification.preferences.narrator.tone,
+            "narrator_style": specification.preferences.narrator.style,
         }
         return self.update({key: value for key, value in values.items() if value is not None})
 

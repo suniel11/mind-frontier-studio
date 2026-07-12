@@ -51,6 +51,61 @@ _ASPECT_RATIO_CUES = (
 _MINUTE_PATTERN = re.compile(r"\b(\d+(?:\.\d+)?)\s*(?:-|\s)?(?:minutes?|mins?)\b")
 _SECOND_PATTERN = re.compile(r"\b(\d{1,3})\s*(?:-|\s)?(?:seconds?|secs?)\b")
 
+# Each cue phrase is deliberately paired with a narration-specific word
+# ("tone", "narration", "narrator", "accent", ...) rather than a bare
+# adjective -- "calm" alone is too ambiguous (a calm lake, a calm sea) to
+# safely treat as an explicit narrator instruction; "calm narration" is not.
+_TONE_CUES: dict[str, tuple[str, ...]] = {
+    "calm": ("calm narrator", "calm narration", "calm tone", "speak calmly"),
+    "documentary": ("documentary tone", "documentary narration"),
+    "inspirational": ("inspirational tone", "inspirational narration", "inspiring narration"),
+    "serious": ("serious tone", "serious narration", "serious narrator"),
+    "dramatic": ("dramatic tone", "dramatic narration", "dramatic narrator"),
+    "emotional": ("emotional tone", "emotional narration", "emotional narrator"),
+    "curious": ("curious tone", "curious narration"),
+    "investigative": ("investigative tone", "investigative narration"),
+    "educational": ("educational tone", "educational narration"),
+}
+_STYLE_CUES: dict[str, tuple[str, ...]] = {
+    "netflix_documentary": ("netflix documentary", "netflix style narration"),
+    "bbc": ("bbc style", "bbc narration", "bbc documentary"),
+    "national_geographic": ("national geographic style", "nat geo style", "national geographic narration"),
+    "vox_explainer": ("vox explainer", "vox style"),
+    "teacher": ("teacher style", "like a teacher"),
+    "podcast": ("podcast style", "podcast narration"),
+    "storyteller": ("storyteller style", "storytelling style", "storyteller narration"),
+}
+_PACE_CUES: dict[str, tuple[str, ...]] = {
+    "slow": ("slow pace", "slow narration", "speak slowly"),
+    "fast": ("fast pace", "fast narration", "speak quickly", "speak fast"),
+    "normal": ("normal pace", "normal narration"),
+}
+_ENERGY_CUES: dict[str, tuple[str, ...]] = {
+    "high": ("high energy", "energetic narration", "energetic narrator"),
+    "low": ("low energy", "subdued narration", "subdued narrator"),
+    "medium": ("medium energy", "balanced energy"),
+}
+_ACCENT_CUES: dict[str, tuple[str, ...]] = {
+    "american": ("american accent", "american narrator", "american voice"),
+    "british": ("british accent", "british narrator", "british voice"),
+    "australian": ("australian accent", "australian narrator", "australian voice"),
+    "indian": ("indian accent", "indian narrator", "indian voice"),
+    "neutral_english": ("neutral accent", "neutral english accent"),
+}
+_AGE_CUES: dict[str, tuple[str, ...]] = {
+    "young_adult": ("young adult narrator", "youthful narrator", "young narrator"),
+    "mature": ("mature narrator", "older narrator", "elderly narrator"),
+    "adult": ("adult narrator",),
+}
+
+
+def _match_category(text: str, cues: dict[str, tuple[str, ...]]) -> str | None:
+    lowered = text.casefold()
+    for category, phrases in cues.items():
+        if any(phrase in lowered for phrase in phrases):
+            return category
+    return None
+
 
 def _clauses(text: str) -> list[str]:
     return list(_CLAUSE_SPLIT.split(text.casefold()))
@@ -101,6 +156,12 @@ def extract_explicit_preferences(prompt: str) -> UserCreativePreferences:
     preferences = UserCreativePreferences()
 
     preferences.narrator.gender = _gender_near(prompt, _NARRATOR_ANCHORS)
+    preferences.narrator.tone = _match_category(prompt, _TONE_CUES)
+    preferences.narrator.style = _match_category(prompt, _STYLE_CUES)
+    preferences.narrator.pace = _match_category(prompt, _PACE_CUES)
+    preferences.narrator.energy = _match_category(prompt, _ENERGY_CUES)
+    preferences.narrator.accent = _match_category(prompt, _ACCENT_CUES)
+    preferences.narrator.age = _match_category(prompt, _AGE_CUES)
 
     # Disable cues always win when both match: a phrase like "no on-camera
     # presenter" legitimately contains the enable cue "on-camera presenter"

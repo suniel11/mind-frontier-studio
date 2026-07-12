@@ -20,17 +20,39 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field
 
 Gender = Literal["male", "female"]
+NarratorAge = Literal["young_adult", "adult", "mature"]
+NarratorTone = Literal[
+    "calm", "documentary", "inspirational", "serious", "dramatic",
+    "emotional", "curious", "investigative", "educational",
+]
+NarratorStyle = Literal[
+    "netflix_documentary", "bbc", "national_geographic", "vox_explainer",
+    "teacher", "podcast", "storyteller",
+]
+NarratorPace = Literal["slow", "normal", "fast"]
+NarratorEnergy = Literal["low", "medium", "high"]
+NarratorAccent = Literal["american", "british", "australian", "indian", "neutral_english"]
+
+CaptionTheme = Literal[
+    "netflix_documentary", "bbc_documentary", "national_geographic",
+    "vox", "minimal", "modern", "cinematic",
+]
+CaptionAnimation = Literal["fade", "slide", "pop", "none"]
+CaptionPosition = Literal["bottom", "lower_third", "middle", "top"]
 
 
 class NarratorPreferences(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     gender: Gender | None = None
-    age: str | None = None
-    accent: str | None = None
+    age: NarratorAge | None = None
+    accent: NarratorAccent | None = None
     language: str | None = None
     speaking_speed: float | None = Field(default=None, ge=0.5, le=2.0)
-    tone: str | None = None
+    tone: NarratorTone | None = None
+    style: NarratorStyle | None = None
+    pace: NarratorPace | None = None
+    energy: NarratorEnergy | None = None
     emotion: str | None = None
     voice_style: str | None = None
 
@@ -77,6 +99,14 @@ class RenderingPreferences(BaseModel):
     transitions: str | None = None
 
 
+class CaptionsPreferences(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    theme: CaptionTheme | None = None
+    animation: CaptionAnimation | None = None
+    position: CaptionPosition | None = None
+
+
 class UserCreativePreferences(BaseModel):
     """Composed preference set covering every stage of the pipeline."""
 
@@ -87,6 +117,7 @@ class UserCreativePreferences(BaseModel):
     video: VideoPreferences = Field(default_factory=VideoPreferences)
     visuals: VisualsPreferences = Field(default_factory=VisualsPreferences)
     rendering: RenderingPreferences = Field(default_factory=RenderingPreferences)
+    captions: CaptionsPreferences = Field(default_factory=CaptionsPreferences)
 
     def merged_over(self, lower_priority: "UserCreativePreferences") -> "UserCreativePreferences":
         """Return preferences with ``self``'s explicit fields taking priority
@@ -106,4 +137,5 @@ class UserCreativePreferences(BaseModel):
             video=merge_model(self.video, lower_priority.video),
             visuals=merge_model(self.visuals, lower_priority.visuals),
             rendering=merge_model(self.rendering, lower_priority.rendering),
+            captions=merge_model(self.captions, lower_priority.captions),
         )

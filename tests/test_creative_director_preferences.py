@@ -35,6 +35,9 @@ def test_preferences_api_never_requires_or_returns_project_prompt(tmp_path, monk
         "narration_style",
         "caption_style",
         "music_preference",
+        "narrator_gender",
+        "narrator_tone",
+        "narrator_style",
     }
     assert "prompt" not in saved.text.casefold()
 

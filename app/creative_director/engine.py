@@ -18,6 +18,8 @@ from app.creative_director.preferences import (
     PreferenceStore,
     preference_store,
 )
+from app.production.preference_extraction import extract_explicit_preferences
+from app.production.preferences import NarratorPreferences, UserCreativePreferences
 from app.production.specification import ProductionSpecification
 
 
@@ -67,11 +69,31 @@ def fallback_questionnaire(
             type="single_choice",
             options=["Informative", "Cinematic", "Emotional", "Playful"],
         ),
+        DirectorQuestion(
+            id="narrator_gender",
+            question="Who should narrate this?",
+            type="single_choice",
+            options=["Male narrator", "Female narrator"],
+        ),
+        DirectorQuestion(
+            id="narrator_tone",
+            question="What narration tone fits best?",
+            type="single_choice",
+            options=["Calm", "Documentary", "Inspirational", "Dramatic", "Investigative"],
+        ),
+        DirectorQuestion(
+            id="narrator_style",
+            question="Which narration style fits best?",
+            type="single_choice",
+            options=["Netflix Documentary", "BBC", "National Geographic", "Vox Explainer", "Podcast"],
+        ),
     ]
     if _duration_seconds(prompt) is not None:
         questions = [question for question in questions if question.id != "runtime"]
-    questions = _without_resolved_preference_questions(questions, preferences)
-    return QuestionResponse(questions=questions)
+    questions = _without_resolved_preference_questions(questions, preferences, prompt)
+    # QuestionResponse caps at 5 questions; keep the higher-priority ones
+    # (declared first) when more than 5 remain unresolved.
+    return QuestionResponse(questions=questions[:5])
 
 
 class CreativeDirector:
@@ -105,6 +127,7 @@ class CreativeDirector:
             return _without_resolved_preference_questions(
                 result.questions,
                 preferences,
+                clean_prompt,
             )
         except Exception as exc:
             self._log_fallback("question generation", exc)
@@ -267,6 +290,30 @@ def build_deterministic_brief(
     )
 
 
+_NARRATOR_GENDER_ANSWERS = {"male narrator": "male", "female narrator": "female", "male": "male", "female": "female"}
+_NARRATOR_TONE_ANSWERS = {
+    "calm": "calm", "documentary": "documentary", "inspirational": "inspirational",
+    "serious": "serious", "dramatic": "dramatic", "emotional": "emotional",
+    "curious": "curious", "investigative": "investigative", "educational": "educational",
+}
+_NARRATOR_STYLE_ANSWERS = {
+    "netflix documentary": "netflix_documentary", "bbc": "bbc",
+    "national geographic": "national_geographic", "vox explainer": "vox_explainer",
+    "teacher": "teacher", "podcast": "podcast", "storyteller": "storyteller",
+}
+
+
+def _narrator_preferences_from_answers(answers: dict[str, Any]) -> NarratorPreferences:
+    gender_answer = _answer_text(answers, "narrator_gender").casefold()
+    tone_answer = _answer_text(answers, "narrator_tone").casefold()
+    style_answer = _answer_text(answers, "narrator_style").casefold()
+    return NarratorPreferences(
+        gender=_NARRATOR_GENDER_ANSWERS.get(gender_answer),
+        tone=_NARRATOR_TONE_ANSWERS.get(tone_answer),
+        style=_NARRATOR_STYLE_ANSWERS.get(style_answer),
+    )
+
+
 def _build_specification(
     prompt: str,
     answers: dict[str, Any],
@@ -343,6 +390,7 @@ def _build_specification(
         ),
         channel_id=_safe_channel_id(_answer_text(answers, "channel_id")),
         source_brief_text=source_brief_text,
+        preferences=UserCreativePreferences(narrator=_narrator_preferences_from_answers(answers)),
     )
 
 
@@ -364,6 +412,9 @@ def _answers_with_preferences(
         ),
         "caption_style": ("caption_style", "captions"),
         "music_preference": ("music_preference", "music_direction", "music"),
+        "narrator_gender": ("narrator_gender",),
+        "narrator_tone": ("narrator_tone",),
+        "narrator_style": ("narrator_style",),
     }
     for preference_key, answer_keys in aliases.items():
         value = getattr(preferences, preference_key)
@@ -375,9 +426,14 @@ def _answers_with_preferences(
 def _without_resolved_preference_questions(
     questions: list[DirectorQuestion],
     preferences: CreatorPreferences | None,
+    prompt: str = "",
 ) -> list[DirectorQuestion]:
-    if preferences is None:
-        return questions
+    """Drop any question whose answer is already known -- either remembered
+    from a past production (``preferences``) or stated explicitly in this
+    prompt (checked with the same deterministic extractor the render
+    pipeline uses, so "never ask again" means the same thing here as it does
+    downstream)."""
+
     resolved_ids: set[str] = set()
     preference_question_ids = {
         "target_seconds": {"runtime", "duration", "target_seconds"},
@@ -387,10 +443,24 @@ def _without_resolved_preference_questions(
         "narration_style": {"narration", "narration_style", "voice"},
         "caption_style": {"captions", "caption_style"},
         "music_preference": {"music", "music_direction", "music_preference"},
+        "narrator_gender": {"narrator_gender"},
+        "narrator_tone": {"narrator_tone"},
+        "narrator_style": {"narrator_style"},
     }
-    for key, ids in preference_question_ids.items():
-        if getattr(preferences, key) is not None:
-            resolved_ids.update(ids)
+    if preferences is not None:
+        for key, ids in preference_question_ids.items():
+            if getattr(preferences, key, None) is not None:
+                resolved_ids.update(ids)
+
+    if prompt:
+        explicit = extract_explicit_preferences(prompt)
+        if explicit.narrator.gender is not None:
+            resolved_ids.add("narrator_gender")
+        if explicit.narrator.tone is not None:
+            resolved_ids.add("narrator_tone")
+        if explicit.narrator.style is not None:
+            resolved_ids.add("narrator_style")
+
     return [question for question in questions if question.id not in resolved_ids]
 
 

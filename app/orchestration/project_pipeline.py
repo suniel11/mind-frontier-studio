@@ -14,6 +14,8 @@ from app.director.engine import apply_director_engine
 from app.learning.memory import record_project
 from app.learning.profile import load_studio_profile, save_studio_profile
 from app.models import ProjectOutput, ProjectRequest
+from app.narration.report import build_narration_report, save_narration_report
+from app.narration.voice_selection import select_voice
 from app.narrative.beats import apply_narrative_beats
 from app.narrative.duration_planning import retime_scenes
 from app.narrative.report import save_beat_map
@@ -32,7 +34,7 @@ from app.publishing.release import build_release_package
 from app.publishing.thumbnail import choose_thumbnail_source, create_thumbnail
 from app.quality.inspector import inspect_project
 from app.services.audio import probe_duration
-from app.services.media import build_video, gender_for_voice, generate_voiceover, voice_for_character
+from app.services.media import build_video, gender_for_voice, generate_voiceover
 from app.services.project_store import make_project_id, save_project
 from app.visual.pipeline import apply_visual_storytelling
 
@@ -213,7 +215,8 @@ def create_project_pipeline(
             # copies this file in -- same path would make that copy a no-op
             # source==dest error.
             narration_audio_path = media_dir / "narration-source.mp3"
-            narrator_voice = voice_for_character(character_result, preferences=specification.preferences)
+            voice_selection = select_voice(character_result, specification.preferences)
+            narrator_voice = voice_selection.voice
             ffmpeg_exe = imageio_ffmpeg.get_ffmpeg_exe()
 
             script_result, narration_seconds = synthesize_narration(
@@ -227,6 +230,12 @@ def create_project_pipeline(
                 resize_script=script.resize,
             )
             retime_scenes(storyboard_result, narration_seconds)
+
+            narration_report = build_narration_report(
+                specification.preferences, voice_selection, provider="openai"
+            )
+            save_narration_report(project_dir, narration_report)
+            output.warnings.extend(narration_report.warnings)
 
             output.script = script_result
             output.storyboard = storyboard_result

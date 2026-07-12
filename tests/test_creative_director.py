@@ -103,11 +103,15 @@ def test_invalid_model_response_uses_question_fallback(tmp_path):
     questions = service.generate_questions(PROMPT)
 
     assert 0 < len(questions) <= 5
+    # The fallback questionnaire now also offers narrator_gender/tone/style
+    # questions; QuestionResponse caps at 5, so only the highest-priority
+    # ones (the original four core questions, then narrator_gender) survive.
     assert {item.id for item in questions} == {
         "target_audience",
         "output_format",
         "runtime",
         "creative_direction",
+        "narrator_gender",
     }
 
 

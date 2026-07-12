@@ -17,8 +17,12 @@ from app.config import (
 from app.services.openai_client import get_openai_client
 from app.services.audio import master_audio
 from app.models import Storyboard, ShortScript
-from app.director.captions import semantic_phrases
+from app.captions.engine import build_caption_document
 from app.cinema.motion import compose_motion_filter
+from app.narration import voice_selection as narration_voices
+from app.narration.instructions import build_narration_instructions
+from app.narration.pauses import plan_pauses
+from app.narration.pronunciation import apply_pronunciation_hints
 from app.rendering.graph import RenderGraph
 
 if TYPE_CHECKING:
@@ -62,31 +66,12 @@ def _font(size: int):
     return ImageFont.load_default()
 
 
-# Voice pools split by the gender field on a project's Character Bible, so
-# the narrator's voice and the presenter's on-screen appearance always agree
-# instead of each subsystem picking independently.
-MALE_VOICES = ("onyx", "echo")
-FEMALE_VOICES = ("nova", "shimmer")
-
-
-def _normalize_gender(value: str | None) -> str | None:
-    gender = str(value or "").strip().casefold()
-    if gender in {"male", "man", "masculine", "m"}:
-        return "male"
-    if gender in {"female", "woman", "feminine", "f"}:
-        return "female"
-    return None
-
-
-def gender_for_voice(voice: str) -> str | None:
-    """Reverse lookup used by validation to confirm what gender a voice
-    selection actually resolved to."""
-
-    if voice in MALE_VOICES:
-        return "male"
-    if voice in FEMALE_VOICES:
-        return "female"
-    return None
+# Voice pools/selection now live in app.narration.voice_selection (Narration
+# Engine v2); re-exported here so existing call sites/tests that import them
+# from app.services.media keep working unchanged.
+MALE_VOICES = narration_voices.MALE_VOICES
+FEMALE_VOICES = narration_voices.FEMALE_VOICES
+gender_for_voice = narration_voices.gender_for_voice
 
 
 def voice_for_character(
@@ -96,55 +81,16 @@ def voice_for_character(
 ) -> str:
     """Pick a narrator voice, honoring an explicit user request first.
 
-    Priority: an explicit ``preferences.narrator.gender`` (the user's own
-    words) always wins, even when no Character Bible exists (a video can
-    have a female narrator with no on-screen presenter). Only when the user
-    did not specify a gender does the Character Bible's gender apply, so a
-    presenter's on-screen appearance and the narrator agree by default.
+    Thin backward-compatible wrapper over
+    app.narration.voice_selection.select_voice, which also logs the
+    selection and records any accent-guarantee warning. Priority: an
+    explicit ``preferences.narrator.gender`` (the user's own words) always
+    wins, even when no Character Bible exists (a video can have a female
+    narrator with no on-screen presenter). Only when the user did not
+    specify a gender does the Character Bible's gender apply.
     """
 
-    explicit_gender = _normalize_gender(getattr(getattr(preferences, "narrator", None), "gender", None))
-    bible_gender = _normalize_gender(getattr(character_bible, "gender", None))
-    gender = explicit_gender or bible_gender
-
-    if gender == "male":
-        voice = MALE_VOICES[0]
-    elif gender == "female":
-        voice = FEMALE_VOICES[0]
-    else:
-        voice = default_voice
-
-    logger.info(
-        "Narrator voice selected: %s (gender=%s, source=%s)",
-        voice,
-        gender or "unspecified",
-        "explicit_preference" if explicit_gender else ("character_bible" if bible_gender else "default"),
-    )
-    return voice
-
-
-def _narrator_instructions(preferences: "UserCreativePreferences | None") -> str:
-    base = (
-        "Calm, thoughtful documentary narration. "
-        "Moderate pace, precise diction, restrained emotion. "
-        "Use subtle pauses after important ideas."
-    )
-    narrator = getattr(preferences, "narrator", None)
-    if narrator is None:
-        return base
-
-    overrides = []
-    if narrator.tone:
-        overrides.append(f"tone: {narrator.tone}")
-    if narrator.emotion:
-        overrides.append(f"emotion: {narrator.emotion}")
-    if narrator.voice_style:
-        overrides.append(f"voice style: {narrator.voice_style}")
-    if narrator.accent:
-        overrides.append(f"accent: {narrator.accent}")
-    if not overrides:
-        return base
-    return base + " Creator-specified direction takes priority: " + ", ".join(overrides) + "."
+    return narration_voices.select_voice(character_bible, preferences, default_voice).voice
 
 
 def generate_voiceover(
@@ -153,13 +99,16 @@ def generate_voiceover(
     voice: str = OPENAI_TTS_VOICE,
     preferences: "UserCreativePreferences | None" = None,
 ):
-    speed = getattr(getattr(preferences, "narrator", None), "speaking_speed", None)
+    # Pause planning and pronunciation hints only ever touch this TTS-input
+    # copy -- scene.narration (what captions read) is never modified.
+    narration_text = apply_pronunciation_hints(plan_pauses(script.voiceover))
+    speed = narration_voices.effective_speed(preferences)
     kwargs = {"speed": speed} if speed is not None else {}
     response = get_openai_client().audio.speech.create(
         model=OPENAI_TTS_MODEL,
         voice=voice,
-        input=script.voiceover,
-        instructions=_narrator_instructions(preferences),
+        input=narration_text,
+        instructions=build_narration_instructions(preferences),
         **kwargs,
     )
     output_path.write_bytes(response.read())
@@ -365,139 +314,30 @@ def _concat_scene_clips(
         raise RuntimeError("FFmpeg scene concatenation failed: " + completed.stderr[-1800:])
 
 
-def _ass_time(seconds: float) -> str:
-    seconds = max(0.0, seconds)
-    hours = int(seconds // 3600)
-    minutes = int((seconds % 3600) // 60)
-    remaining = seconds % 60
-    return f"{hours}:{minutes:02d}:{remaining:05.2f}"
+def _write_dynamic_captions(
+    storyboard: Storyboard,
+    output_path: Path,
+    width: int = WIDTH,
+    height: int = HEIGHT,
+    aspect_ratio: str = "9:16",
+    preferences: "UserCreativePreferences | None" = None,
+):
+    """Caption Engine v2: safe-area-aware, naturally line-broken, themed,
+    highlighted, positioned, and animated -- see app/captions/engine.py for
+    the actual generation logic. This stays a thin call site so the render
+    pipeline's call graph is unchanged."""
 
-
-def _clean_words(text: str) -> list[str]:
-    return re.findall(r"[A-Za-z0-9’'-]+[.,!?;:]?", text)
-
-
-def _split_into_phrases(text: str, target_words: int = 4) -> list[str]:
-    words = _clean_words(text)
-    if not words:
-        return []
-
-    phrases = []
-    current = []
-    for word in words:
-        current.append(word)
-        punctuation_break = word.endswith((".", ",", "!", "?", ";", ":"))
-        if len(current) >= target_words or punctuation_break:
-            phrases.append(" ".join(current))
-            current = []
-
-    if current:
-        phrases.append(" ".join(current))
-    return phrases
-
-
-def _escape_ass_text(text: str) -> str:
-    return (
-        text.replace("\\", r"\\")
-        .replace("{", r"\{")
-        .replace("}", r"\}")
-        .replace("\n", r"\N")
+    captions = getattr(preferences, "captions", None)
+    document = build_caption_document(
+        storyboard,
+        width,
+        height,
+        aspect_ratio=aspect_ratio,
+        theme_name=getattr(captions, "theme", None),
+        animation_style=getattr(captions, "animation", None),
+        position_override=getattr(captions, "position", None),
     )
-
-
-def _highlight_phrase(phrase: str) -> str:
-    words = phrase.split()
-    candidates = [
-        (index, re.sub(r"[^A-Za-z0-9’'-]", "", word))
-        for index, word in enumerate(words)
-    ]
-    candidates = [(index, word) for index, word in candidates if len(word) >= 5]
-
-    if not candidates:
-        return _escape_ass_text(phrase.upper())
-
-    highlight_index, _ = max(candidates, key=lambda item: len(item[1]))
-    rendered = []
-
-    for index, word in enumerate(words):
-        escaped = _escape_ass_text(word.upper())
-        if index == highlight_index:
-            rendered.append(r"{\c&H62B8E8&\b1}" + escaped + r"{\c&HFFFFFF&\b1}")
-        else:
-            rendered.append(escaped)
-
-    return " ".join(rendered)
-
-
-def _write_dynamic_captions(storyboard: Storyboard, output_path: Path, width: int = WIDTH, height: int = HEIGHT):
-    # Margins were tuned for the 1080x1920 default; scale them proportionally
-    # to height so captions land in a sensible place at other aspect ratios
-    # instead of being positioned for a video half again as tall.
-    scale = height / HEIGHT
-    margin_standard = round(330 * scale)
-    margin_top = round(280 * scale)
-    margin_hook = round(300 * scale)
-    margin_hook_top = round(250 * scale)
-
-    header = f"""[Script Info]
-ScriptType: v4.00+
-PlayResX: {width}
-PlayResY: {height}
-WrapStyle: 2
-ScaledBorderAndShadow: yes
-
-[V4+ Styles]
-Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-Style: Dynamic,Arial,72,&H00FFFFFF,&H00FFFFFF,&H00101010,&H96000000,-1,0,0,0,100,100,0,0,3,3,0,2,100,100,{margin_standard},1
-Style: DynamicTop,Arial,72,&H00FFFFFF,&H00FFFFFF,&H00101010,&H96000000,-1,0,0,0,100,100,0,0,3,3,0,8,100,100,{margin_top},1
-Style: Hook,Arial,84,&H00FFFFFF,&H00FFFFFF,&H00101010,&HA0000000,-1,0,0,0,100,100,0,0,3,4,0,2,90,90,{margin_hook},1
-Style: HookTop,Arial,84,&H00FFFFFF,&H00FFFFFF,&H00101010,&HA0000000,-1,0,0,0,100,100,0,0,3,4,0,8,90,90,{margin_hook_top},1
-
-[Events]
-Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
-"""
-
-    events = []
-
-    for scene in storyboard.scenes:
-        phrases = semantic_phrases(scene.narration, max_words=5)
-        if not phrases:
-            phrases = [scene.on_screen_text]
-
-        scene_start = float(scene.start_second)
-        scene_end = float(scene.end_second)
-        scene_duration = max(0.5, scene_end - scene_start)
-
-        weights = [max(1, len(_clean_words(phrase))) for phrase in phrases]
-        total_weight = sum(weights)
-        cursor = scene_start
-
-        for index, (phrase, weight) in enumerate(zip(phrases, weights)):
-            duration = scene_duration * weight / total_weight
-            start = cursor
-            end = scene_end if index == len(phrases) - 1 else cursor + duration
-            cursor = end
-
-            is_hook = scene.number == 1 and index == 0
-            safe_area = str(getattr(scene, "caption_safe_area", "lower_third"))
-            use_top = safe_area == "upper_third"
-            if is_hook:
-                style = "HookTop" if use_top else "Hook"
-            else:
-                style = "DynamicTop" if use_top else "Dynamic"
-            animation = (
-                r"{\fad(70,90)\fscx82\fscy82\t(0,150,\fscx100\fscy100)\bord4\shad0}"
-                if is_hook
-                else r"{\fad(80,80)\fscx90\fscy90\t(0,130,\fscx100\fscy100)\bord3\shad0}"
-            )
-            text = animation + _highlight_phrase(phrase)
-
-            events.append(
-                f"Dialogue: 0,{_ass_time(start)},{_ass_time(end)},"
-                f"{style},,0,0,0,,{text}"
-            )
-
-    output_path.write_text(header + "\n".join(events), encoding="utf-8-sig")
+    output_path.write_text(document, encoding="utf-8-sig")
 
 
 def _subtitle_filter_path(path: Path) -> str:
@@ -566,6 +406,8 @@ def render_video(
     height: int = HEIGHT,
     subtitles: bool = True,
     background_music: bool | None = None,
+    aspect_ratio: str = "9:16",
+    preferences: "UserCreativePreferences | None" = None,
 ):
     ffmpeg = imageio_ffmpeg.get_ffmpeg_exe()
     clips_dir = output_path.parent / "scene-clips"
@@ -594,7 +436,14 @@ def render_video(
 
     if subtitles:
         captions_file = output_path.parent / "dynamic-captions.ass"
-        _write_dynamic_captions(storyboard, captions_file, width=width, height=height)
+        _write_dynamic_captions(
+            storyboard,
+            captions_file,
+            width=width,
+            height=height,
+            aspect_ratio=aspect_ratio,
+            preferences=preferences,
+        )
         captioned_video = output_path.parent / "captioned-video.mp4"
         _burn_captions(ffmpeg, silent_video, captions_file, captioned_video)
     else:
@@ -668,6 +517,8 @@ def build_video(
         height=height,
         subtitles=subtitles,
         background_music=background_music,
+        aspect_ratio=resolved_aspect_ratio,
+        preferences=preferences,
     )
     graph.mark("render", "complete", output=str(video_path))
     return video_path
