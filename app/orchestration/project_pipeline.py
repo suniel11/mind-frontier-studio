@@ -200,7 +200,10 @@ def create_project_pipeline(
             # before any scene timing is finalized.
             media_dir = project_dir / "media"
             media_dir.mkdir(exist_ok=True)
-            narration_audio_path = media_dir / "voiceover.mp3"
+            # Distinct from the "voiceover.mp3" build_video writes to when it
+            # copies this file in -- same path would make that copy a no-op
+            # source==dest error.
+            narration_audio_path = media_dir / "narration-source.mp3"
             narrator_voice = voice_for_character(character_result)
             ffmpeg_exe = imageio_ffmpeg.get_ffmpeg_exe()
 
