@@ -19,6 +19,7 @@ from app.orion.routes import router as orion_router
 from app.atlas.routes import router as atlas_router
 from app.producer_ai.routes import router as producer_router
 from app.creative_director.routes import router as creative_director_router
+from app.production.routes import router as production_router
 from app.core.settings import settings
 
 app = FastAPI(
@@ -52,6 +53,7 @@ app.include_router(orion_router, prefix="/api")
 app.include_router(atlas_router, prefix="/api")
 app.include_router(producer_router, prefix="/api")
 app.include_router(creative_director_router, prefix="/api")
+app.include_router(production_router, prefix="/api")
 
 
 @app.get("/")

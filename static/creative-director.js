@@ -202,7 +202,7 @@
         method: "POST",
         headers: {"Content-Type": "application/json"},
         body: JSON.stringify({prompt: originalPrompt})
-      });
+      }, 60000);
       questions = Array.isArray(data.questions) ? data.questions.slice(0, 5) : [];
       status.textContent = questions.length
         ? `Question 1 of ${questions.length}`
@@ -269,7 +269,7 @@
         method: "POST",
         headers: {"Content-Type": "application/json"},
         body: JSON.stringify({prompt: originalPrompt, answers})
-      });
+      }, 60000);
       if (!brief.production_specification && !brief.production_spec && !brief.specification) {
         brief.production_specification = {
           original_prompt: brief.topic || originalPrompt,

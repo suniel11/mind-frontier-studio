@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+from contextlib import contextmanager
+from typing import Callable, Iterator
 
 from app.agents import character, research, script, storyboard, seo
 from app.cinema.director import apply_cinematic_direction
@@ -27,14 +29,45 @@ from app.services.project_store import make_project_id, save_project
 from app.visual.pipeline import apply_visual_storytelling
 
 
-def create_project_pipeline(request: ProjectRequest) -> ProjectOutput:
-    project_id = make_project_id(request.topic)
+class PipelineCancelledError(RuntimeError):
+    """Raised when a persistent production job asks the pipeline to stop."""
+
+
+def create_project_pipeline(
+    request: ProjectRequest,
+    *,
+    project_id: str | None = None,
+    progress_callback: Callable[[str, str], None] | None = None,
+    cancellation_check: Callable[[], bool] | None = None,
+) -> ProjectOutput:
+    project_id = project_id or make_project_id(request.topic)
+    specification = request.production_specification
     telemetry = PipelineTelemetry(settings.root, project_id)
     project_dir = None
     success = False
 
+    def check_cancelled() -> None:
+        if cancellation_check and cancellation_check():
+            raise PipelineCancelledError("Production job was cancelled.")
+
+    @contextmanager
+    def tracked_stage(stage: str) -> Iterator[None]:
+        check_cancelled()
+        if progress_callback:
+            progress_callback(stage, "started")
+        try:
+            with telemetry.stage(stage):
+                yield
+        except Exception:
+            if progress_callback:
+                progress_callback(stage, "failed")
+            raise
+        check_cancelled()
+        if progress_callback:
+            progress_callback(stage, "complete")
+
     try:
-        with telemetry.stage("producer_preflight"):
+        with tracked_stage("producer_preflight"):
             preflight = assess_topic(settings.root, request.topic)
             if preflight.overall_score < 35:
                 raise RuntimeError(
@@ -43,17 +76,21 @@ def create_project_pipeline(request: ProjectRequest) -> ProjectOutput:
                     f"Suggested angle: {preflight.suggested_angle}"
                 )
 
-        with telemetry.stage("research"):
-            research_result = research.run(request.topic)
+        with tracked_stage("research"):
+            research_result = research.run(
+                request.topic,
+                production_specification=specification,
+            )
 
-        with telemetry.stage("script"):
+        with tracked_stage("script"):
             script_result = script.run(
                 request.topic,
                 research_result,
                 request.target_seconds,
+                production_specification=specification,
             )
 
-        with telemetry.stage("producer_review"):
+        with tracked_stage("producer_review"):
             producer_result = review_script(script_result)
             if not producer_result.approved:
                 raise RuntimeError(
@@ -61,42 +98,47 @@ def create_project_pipeline(request: ProjectRequest) -> ProjectOutput:
                     + " ".join(producer_result.notes)
                 )
 
-        with telemetry.stage("character"):
-            character_result = character.run(script_result)
+        with tracked_stage("character"):
+            character_result = character.run(
+                script_result,
+                production_specification=specification,
+            )
 
-        with telemetry.stage("storyboard"):
+        with tracked_stage("storyboard"):
             storyboard_result = storyboard.run(
                 script_result,
                 request.target_seconds,
                 character_result,
+                production_specification=specification,
             )
 
-        with telemetry.stage("narrative_beats"):
+        with tracked_stage("narrative_beats"):
             storyboard_result, narrative_beats = apply_narrative_beats(
                 storyboard_result,
                 request.target_seconds,
             )
 
-        with telemetry.stage("director"):
+        with tracked_stage("director"):
             studio_profile = load_studio_profile(settings.root)
             storyboard_result, _director_plan = apply_director_engine(
                 storyboard_result,
                 studio_profile=studio_profile,
+                production_specification=specification,
             )
 
-        with telemetry.stage("visual_storytelling"):
+        with tracked_stage("visual_storytelling"):
             storyboard_result, _shot_plan = apply_visual_storytelling(
                 storyboard_result,
                 settings.root,
                 style_name="documentary",
             )
 
-        with telemetry.stage("cinema_direction"):
+        with tracked_stage("cinema_direction"):
             storyboard_result, cinema_report = apply_cinematic_direction(
                 storyboard_result,
             )
 
-        with telemetry.stage("prompt_compilation"):
+        with tracked_stage("prompt_compilation"):
             storyboard_result = compile_storyboard_prompts(
                 storyboard_result,
                 settings.root,
@@ -104,8 +146,11 @@ def create_project_pipeline(request: ProjectRequest) -> ProjectOutput:
                 style_name="documentary",
             )
 
-        with telemetry.stage("seo"):
-            seo_result = seo.run(script_result)
+        with tracked_stage("seo"):
+            seo_result = seo.run(
+                script_result,
+                production_specification=specification,
+            )
 
         output = ProjectOutput(
             project_id=project_id,
@@ -115,14 +160,15 @@ def create_project_pipeline(request: ProjectRequest) -> ProjectOutput:
             storyboard=storyboard_result,
             character_bible=character_result,
             seo=seo_result,
+            production_specification=specification,
         )
 
-        with telemetry.stage("project_storage"):
+        with tracked_stage("project_storage"):
             project_dir = save_project(output)
             save_beat_map(project_dir, narrative_beats)
             save_cinema_report(project_dir, cinema_report)
 
-        with telemetry.stage("render"):
+        with tracked_stage("render"):
             video_path = build_video(
                 project_dir,
                 script_result,
@@ -130,7 +176,7 @@ def create_project_pipeline(request: ProjectRequest) -> ProjectOutput:
             )
             output.video_url = f"/projects/{project_id}/{video_path.name}"
 
-        with telemetry.stage("quality_inspection"):
+        with tracked_stage("quality_inspection"):
             quality_result = inspect_project(
                 script=script_result,
                 storyboard=storyboard_result,
@@ -142,7 +188,7 @@ def create_project_pipeline(request: ProjectRequest) -> ProjectOutput:
                 encoding="utf-8",
             )
 
-        with telemetry.stage("thumbnail"):
+        with tracked_stage("thumbnail"):
             thumbnail_source = choose_thumbnail_source(project_dir / "media")
             thumbnail_path = project_dir / "thumbnail.jpg"
             create_thumbnail(
@@ -151,7 +197,7 @@ def create_project_pipeline(request: ProjectRequest) -> ProjectOutput:
                 output_path=thumbnail_path,
             )
 
-        with telemetry.stage("release_package"):
+        with tracked_stage("release_package"):
             build_release_package(
                 project_dir=project_dir,
                 output=output,
@@ -172,7 +218,7 @@ def create_project_pipeline(request: ProjectRequest) -> ProjectOutput:
                 channel=get_channel_preset(settings.root, "mind-frontier"),
             )
 
-        with telemetry.stage("studio_memory"):
+        with tracked_stage("studio_memory"):
             record_project(
                 root=settings.root,
                 project_id=project_id,
@@ -186,7 +232,7 @@ def create_project_pipeline(request: ProjectRequest) -> ProjectOutput:
                 load_studio_profile(settings.root),
             )
 
-        with telemetry.stage("final_save"):
+        with tracked_stage("final_save"):
             save_project(output)
 
         success = True

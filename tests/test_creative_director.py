@@ -16,6 +16,10 @@ from app.models import ProjectRequest
 PROMPT = "Create an atmospheric launch film for a neighborhood arts space."
 
 
+def empty_preference_store(tmp_path):
+    return PreferenceStore(tmp_path / "empty-preferences.json")
+
+
 class StaticLLM:
     def __init__(self, *, questions=None, brief=None, error: Exception | None = None):
         self.questions = questions
@@ -90,9 +94,10 @@ def test_duplicate_question_ids_are_rejected():
         )
 
 
-def test_invalid_model_response_uses_question_fallback():
+def test_invalid_model_response_uses_question_fallback(tmp_path):
     service = CreativeDirector(
-        llm_factory=lambda: StaticLLM(questions={"questions": "invalid"})
+        llm_factory=lambda: StaticLLM(questions={"questions": "invalid"}),
+        preferences=empty_preference_store(tmp_path),
     )
 
     questions = service.generate_questions(PROMPT)
@@ -160,8 +165,11 @@ def test_deterministic_brief_fallback_is_clean_and_stable():
     ]
 
 
-def test_deterministic_brief_uses_runtime_from_prompt():
-    service = CreativeDirector(llm_factory=lambda: None)
+def test_deterministic_brief_uses_runtime_from_prompt(tmp_path):
+    service = CreativeDirector(
+        llm_factory=lambda: None,
+        preferences=empty_preference_store(tmp_path),
+    )
 
     brief = service.build_brief(
         "Create a 2-minute launch film for the new venue.",
