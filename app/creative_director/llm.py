@@ -33,12 +33,33 @@ class CreativeDirectorLLM:
             or os.getenv("OPENAI_TEXT_MODEL", "").strip()
             or DEFAULT_CREATIVE_DIRECTOR_MODEL
         )
-        return cls(OpenAI(api_key=api_key), model)
+        return cls(
+            OpenAI(api_key=api_key, timeout=45.0, max_retries=2),
+            model,
+        )
 
-    def generate_questions(self, prompt: str) -> QuestionResponse:
+    def generate_questions(
+        self,
+        prompt: str,
+        preferences: dict[str, Any] | None = None,
+    ) -> QuestionResponse:
+        input_text = prompt
+        if preferences:
+            input_text = json.dumps(
+                {
+                    "prompt": prompt,
+                    "reusable_creator_preferences": preferences,
+                    "instruction": (
+                        "Treat these preferences as defaults and do not ask about them "
+                        "unless this prompt clearly conflicts with them."
+                    ),
+                },
+                ensure_ascii=False,
+                allow_nan=False,
+            )
         return self._parse(
             instructions=QUESTION_SYSTEM_PROMPT,
-            input_text=prompt,
+            input_text=input_text,
             response_model=QuestionResponse,
         )
 

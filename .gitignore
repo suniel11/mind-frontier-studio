@@ -11,6 +11,7 @@ youtube-token.json
 
 studio_memory/*.db
 studio_memory/**/*.json
+studio_memory/**/*.jsonl
 *-backup/
 v*-backup/
 

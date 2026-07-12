@@ -1,92 +1,128 @@
-from app.models import CharacterBible, ShortScript, Storyboard, VisualMemory
+from __future__ import annotations
+
+import json
+from typing import TYPE_CHECKING
+
+from app.models import CharacterBible, ShortScript, Storyboard
 from app.services.openai_client import structured_response
 
-INSTRUCTIONS = '''
-You are the Visual Director for Mind Frontier.
-Convert narration into exactly six coherent vertical-video scenes.
-Use cinematic visuals that can be generated as still images.
-No logos, copyrighted characters, visible writing, or watermarks in image prompts.
-On-screen text must be brief.
-Scene timing must be continuous and cover the full target duration.
-Each image_prompt must describe one concrete portrait-oriented cinematic image.
+if TYPE_CHECKING:
+    from app.production.specification import ProductionSpecification
 
-Build one continuous six-beat story arc:
+
+INSTRUCTIONS = """
+You are the Visual Director for Mind Frontier Studio.
+Convert narration into six coherent scenes that can be produced as generated
+still imagery and assembled into a finished video.
+
+Respect the supplied format, aspect ratio, visual style, tone, pacing,
+constraints, and whether a recurring character is actually required. Never
+invent a human protagonist when the production does not request one. Product,
+environmental, abstract, animated, archival, educational, and symbolic imagery
+are all valid when appropriate.
+
+No logos, copyrighted characters, unrequested visible writing, or watermarks in
+image prompts. On-screen text must be brief. Scene timing must be continuous and
+cover the full target duration. Each image prompt must describe one concrete,
+renderable composition.
+
+Build a continuous six-beat arc:
 1. Hook
 2. Setup
-3. Tension
-4. Expansion
-5. Climax
-6. Resolution
+3. Conflict
+4. Insight
+5. Resolution
+6. Final line
 
-Create a Visual Memory before writing scenes. It must lock locations, recurring
-props, production design, time of day, atmosphere, weather, palette, lighting,
-lens language, and strict continuity rules.
+Create a Visual Memory before writing scenes. It must lock relevant locations,
+recurring props, production design, time of day, atmosphere, palette, lighting,
+lens language, and continuity rules. Do not force people, wardrobe, weather, or
+locations when they are irrelevant to the production.
+"""
 
-Every scene must serve one narrative purpose and inherit the Visual Memory.
-Do not redesign locations, props, wardrobe, lighting, or atmosphere between scenes.
-Emotional intensity must generally rise toward scene 5 and release in scene 6.
-Pacing should vary deliberately.
-'''
+
+def _specification_context(
+    production_specification: ProductionSpecification | None,
+) -> str:
+    if production_specification is None:
+        return "Use the legacy vertical short format and established studio style."
+    payload = {
+        key: value
+        for key, value in production_specification.model_dump().items()
+        if value not in (None, "", [])
+    }
+    return json.dumps(payload, ensure_ascii=False, indent=2)
+
+
+def _character_context(character_bible: CharacterBible | None) -> str:
+    if character_bible is None:
+        return """
+CHARACTER DIRECTION:
+- No recurring Character Bible is required for this production.
+- Do not invent a default fictional protagonist.
+- Choose the most relevant subject for each scene from the script and production specification.
+- Preserve continuity for products, objects, environments, graphic motifs, or other recurring subjects.
+"""
+    return f"""
+CHARACTER CONSISTENCY RULES:
+- Use the exact recurring fictional character below only where narratively useful.
+- Copy the prompt_anchor verbatim whenever the character appears.
+- Never alter face, age, hairstyle, wardrobe, accessories, or body proportions.
+- Scenes may omit the character when another subject communicates the idea better.
+
+CHARACTER BIBLE:
+{character_bible.model_dump_json(indent=2)}
+"""
+
 
 def run(
     script: ShortScript,
     target_seconds: int,
-    character_bible: CharacterBible,
+    character_bible: CharacterBible | None = None,
+    production_specification: ProductionSpecification | None = None,
 ) -> Storyboard:
     return structured_response(
         instructions=INSTRUCTIONS,
-        prompt=f'''
+        prompt=f"""
 Target duration: {target_seconds} seconds
+
 Script:
 {script.model_dump_json(indent=2)}
 
-CHARACTER CONSISTENCY RULES:
-- Use the exact recurring protagonist described below in at least four scenes.
-- Copy the prompt_anchor verbatim into every scene where the protagonist appears.
-- Never alter the character's face, age, hairstyle, wardrobe, accessories, or body proportions.
-- Use different framing, pose, environment, and camera angle without redesigning the person.
-- In scenes without the protagonist, preserve the same color palette and lighting language.
+Production specification:
+{_specification_context(production_specification)}
 
-CHARACTER BIBLE:
-{character_bible.model_dump_json(indent=2)}
+{_character_context(character_bible)}
 
 Continuity enforcement:
-- The same fictional protagonist must remain visually identical whenever present.
-- Reuse the same primary location description verbatim across relevant prompts.
-- Reuse the same secondary location description verbatim across relevant prompts.
-- Recurring props must keep the same material, color, scale, and condition.
-- Preserve time of day, weather, palette, lighting direction, and lens language.
-- Scene-to-scene changes must be motivated by story.
+- Reuse exact descriptions for recurring locations, objects, characters, and design motifs.
+- Preserve relevant palette, lighting direction, lens language, and production design.
+- Scene-to-scene changes must be motivated by the story.
 - Every image_prompt must explicitly include its continuity_anchor.
 
-Create exactly six scenes.
+Create exactly six scenes for compatibility with the current render engine.
 The first begins at second 0 and the last ends at second {target_seconds}.
 Use portions of the narration in each scene.
-Before the scenes, create:
-- visual_memory
-- story_arc_summary
+
+Before the scenes, create visual_memory and story_arc_summary.
 
 For each scene, include:
-- story_role: hook, setup, tension, expansion, climax, or resolution
-- narrative_goal: what this scene must make the viewer understand or feel
+- story_role: hook, setup, conflict, insight, resolution, or final_line
+- narrative_goal: what the scene must make the viewer understand or feel
 - continuity_anchor: exact visual details that must carry over
 - location_id: primary or secondary
 - emotional_intensity: integer from 1 to 10
 - pacing: fast, medium, slow, or hold
 - visual_direction for the editor
 - image_prompt for image generation
-- shot_type: wide, medium, close_up, extreme_close_up, over_shoulder, or silhouette
-- motion_type: dolly_in, dolly_out, pan_left, pan_right, tilt_up, tilt_down, or static
-- transition_type: fade, dissolve, or cut
+- shot_type: a concise production-appropriate framing
+- motion_type: dolly_in, dolly_out, pan_left, pan_right, tilt_up, tilt_down, drift, or static
+- transition_type: fade, dissolve, cut, or hold
 - visual_emotion: one concise emotional direction
-- caption_emphasis: the single most important word or phrase
+- caption_emphasis: the most important word or phrase, or an empty string
 
-Directorial rules:
-- Scene 1 is the hook: use the strongest composition and a decisive dolly_in or close_up.
-- Avoid using the same motion more than twice in a row.
-- Match motion to emotion: dolly_in for intensity, dolly_out for isolation, pans for discovery, tilts for scale.
-- Preserve the exact Character Bible identity whenever the recurring protagonist appears.
-- Keep all six scenes visually coherent in palette, lighting, lens language, and production design.
-''',
+Use the strongest composition in scene 1, vary motion deliberately, and keep the
+six scenes coherent without forcing a documentary aesthetic or human subject.
+""",
         schema=Storyboard,
     )

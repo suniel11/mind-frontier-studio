@@ -2,7 +2,15 @@ from openai import OpenAI
 
 from app.config import OPENAI_API_KEY, OPENAI_TEXT_MODEL
 
-client = OpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY else None
+client = (
+    OpenAI(
+        api_key=OPENAI_API_KEY,
+        timeout=45.0,
+        max_retries=2,
+    )
+    if OPENAI_API_KEY
+    else None
+)
 
 
 def get_openai_client() -> OpenAI:

@@ -8,8 +8,9 @@ from pydantic import ValidationError
 from app.creative_director.engine import CreativeDirector
 from app.creative_director.llm import CreativeDirectorLLM
 from app.creative_director.models import QuestionResponse
+from app.creative_director.preferences import CreatorPreferences, PreferenceStore
 from app.creative_director.routes import router as creative_director_router
-from app.orchestrator.models import OrchestratorRequest
+from app.models import ProjectRequest
 
 
 PROMPT = "Create an atmospheric launch film for a neighborhood arts space."
@@ -151,6 +152,12 @@ def test_deterministic_brief_fallback_is_clean_and_stable():
     assert "Creative Objective" in first.creative_brief
     assert "Success Criteria" in first.creative_brief
     assert "Local families" in first.creative_brief
+    assert first.production_specification.original_prompt == PROMPT
+    assert first.production_specification.audience == "Local families"
+    assert first.production_specification.production_constraints == [
+        "No on-camera dialogue",
+        "Use available light",
+    ]
 
 
 def test_deterministic_brief_uses_runtime_from_prompt():
@@ -228,23 +235,53 @@ def test_creative_director_route_response_shapes(monkeypatch):
         "target_seconds",
         "hook_type",
         "creative_brief",
+        "production_specification",
     }
+    specification = brief_response.json()["production_specification"]
+    assert specification["original_prompt"] == PROMPT
+    assert specification["target_seconds"] == 45
 
 
-def test_creative_brief_is_compatible_with_orchestrator_payload():
+def test_creative_brief_is_compatible_with_project_pipeline_payload():
     brief = CreativeDirector(llm_factory=lambda: None).build_brief(
         PROMPT,
         {"runtime": "120 seconds", "creative_direction": "Immersive"},
     )
 
-    payload = OrchestratorRequest.model_validate(
+    payload = ProjectRequest.model_validate(
         {
-            "topic": brief.creative_brief,
-            "target_seconds": brief.target_seconds,
-            "hook_type": brief.hook_type,
-            "save_workspace": True,
+            "production_specification": brief.production_specification.model_dump(),
         }
     )
 
     assert payload.target_seconds == 120
-    assert payload.topic == brief.creative_brief
+    assert payload.topic == PROMPT
+    assert payload.production_specification == brief.production_specification
+
+
+def test_stored_preferences_remove_redundant_fallback_questions(tmp_path):
+    store = PreferenceStore(tmp_path / "preferences.json")
+    store.replace(CreatorPreferences(target_seconds=60, tone="Warm"))
+    service = CreativeDirector(llm_factory=lambda: None, preferences=store)
+
+    questions = service.generate_questions(PROMPT)
+
+    assert "runtime" not in {item.id for item in questions}
+    assert "creative_direction" not in {item.id for item in questions}
+
+
+def test_explicit_answers_override_stored_preferences(tmp_path):
+    store = PreferenceStore(tmp_path / "preferences.json")
+    store.replace(
+        CreatorPreferences(target_seconds=60, aspect_ratio="16:9", tone="Warm")
+    )
+    service = CreativeDirector(llm_factory=lambda: None, preferences=store)
+
+    brief = service.build_brief(
+        PROMPT,
+        {"runtime": "90 seconds", "tone": "Urgent", "aspect_ratio": "1:1"},
+    )
+
+    assert brief.target_seconds == 90
+    assert brief.production_specification.tone == "Urgent"
+    assert brief.production_specification.aspect_ratio == "1:1"

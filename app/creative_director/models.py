@@ -12,6 +12,8 @@ from pydantic import (
     model_validator,
 )
 
+from app.production.specification import ProductionSpecification
+
 
 PromptText = Annotated[
     str,
@@ -105,3 +107,4 @@ class ProductionBrief(CreativeDirectorModel):
         str,
         StringConstraints(strip_whitespace=True, min_length=20, max_length=12000),
     ]
+    production_specification: ProductionSpecification

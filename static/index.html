@@ -9,6 +9,21 @@
 </head>
 <body>
   <main class="shell">
+    <section
+      id="system-readiness-banner"
+      class="system-readiness-banner"
+      aria-live="polite"
+      aria-atomic="true"
+    >
+      <div>
+        <strong id="readiness-banner-title">Checking Studio readiness…</strong>
+        <span id="readiness-banner-message">Verifying local services and configuration.</span>
+      </div>
+      <button id="readiness-open-settings" type="button" class="small-button">
+        Open Settings
+      </button>
+    </section>
+
     <section id="creative-director-panel" class="panel">
       <p class="eyebrow">AI CREATIVE DIRECTOR</p>
       <h2>Create Anything</h2>
@@ -17,14 +32,176 @@
         It will ask only the questions it actually needs.
       </p>
 
-      <div id="director-chat"></div>
+      <div
+        id="director-chat"
+        role="log"
+        aria-live="polite"
+        aria-relevant="additions"
+        aria-label="Creative Director conversation"
+      ></div>
+
+      <div class="director-preferences-row">
+        <div>
+          <strong>Creator preferences</strong>
+          <div id="director-preferences-summary" class="preference-chips">
+            <span class="fine">Loading saved preferences…</span>
+          </div>
+        </div>
+        <details id="director-preferences-editor" class="director-preferences-editor">
+          <summary>Edit preferences</summary>
+          <form id="director-preferences-form" class="director-preferences-form">
+            <label>
+              Default runtime
+              <input id="preference-target-seconds" name="target_seconds" type="number" min="20" max="180">
+            </label>
+            <label>
+              Aspect ratio
+              <select id="preference-aspect-ratio" name="aspect_ratio">
+                <option value="">Ask when relevant</option>
+                <option value="9:16">9:16 vertical</option>
+                <option value="16:9">16:9 landscape</option>
+                <option value="1:1">1:1 square</option>
+                <option value="4:5">4:5 portrait</option>
+              </select>
+            </label>
+            <label>
+              Tone
+              <input id="preference-tone" name="tone" type="text" maxlength="120">
+            </label>
+            <label>
+              Visual style
+              <input id="preference-visual-style" name="visual_style" type="text" maxlength="120">
+            </label>
+            <label>
+              Narration style
+              <input id="preference-narration-style" name="narration_style" type="text" maxlength="120">
+            </label>
+            <label>
+              Caption style
+              <input id="preference-caption-style" name="caption_style" type="text" maxlength="120">
+            </label>
+            <label>
+              Music preference
+              <input id="preference-music" name="music_preference" type="text" maxlength="120">
+            </label>
+            <div class="director-preference-actions">
+              <button type="submit" class="small-button">Save preferences</button>
+              <button id="director-preferences-reset" type="button" class="small-button secondary">
+                Clear saved preferences
+              </button>
+            </div>
+            <p id="director-preferences-status" class="fine" role="status"></p>
+          </form>
+        </details>
+      </div>
 
       <div id="director-input">
+        <label for="director-prompt" class="visually-hidden">Describe what you want to create</label>
         <textarea
           id="director-prompt"
-          placeholder="Create a documentary about why modern cities make people lonely..."
+          maxlength="3000"
+          placeholder="Create a vivid 45-second video that introduces our neighborhood arts space…"
         ></textarea>
         <button id="director-send" type="button">Continue</button>
+      </div>
+      <p id="director-status" class="fine" role="status" aria-live="polite"></p>
+    </section>
+
+    <section id="creator-workspace" class="panel creator-workspace" hidden>
+      <div class="creator-workspace-heading">
+        <div>
+          <p class="eyebrow">CREATOR WORKSPACE</p>
+          <h2>Production</h2>
+          <p id="production-workspace-status" class="fine" role="status" aria-live="polite">
+            Review the brief, then start production.
+          </p>
+        </div>
+        <span id="production-job-badge" class="production-job-badge">BRIEF READY</span>
+      </div>
+
+      <div class="creator-brief-grid">
+        <article class="creator-card">
+          <h3>Production brief</h3>
+          <pre id="production-brief-text" class="director-brief"></pre>
+        </article>
+        <article class="creator-card">
+          <h3>Preferences used</h3>
+          <div id="production-preferences-used" class="preference-chips">
+            <span class="fine">No saved preferences were applied.</span>
+          </div>
+        </article>
+      </div>
+
+      <div class="production-actions" aria-label="Production actions">
+        <button id="production-start" type="button">Start Production</button>
+        <button id="production-cancel" type="button" class="secondary" hidden>Cancel</button>
+        <button id="production-retry" type="button" class="secondary" hidden>Retry failed job</button>
+        <button id="production-new-version" type="button" class="secondary" hidden>Create another version</button>
+        <button id="production-new-idea" type="button" class="secondary">New idea</button>
+      </div>
+
+      <section id="production-progress-panel" class="production-progress-panel" hidden aria-labelledby="production-progress-title">
+        <div class="production-progress-heading">
+          <h3 id="production-progress-title">Job progress</h3>
+          <strong id="production-progress-value">0%</strong>
+        </div>
+        <progress id="production-progress" value="0" max="100">0%</progress>
+        <p id="production-current-stage" class="fine">Queued</p>
+        <ol id="production-stage-timeline" class="production-stage-timeline"></ol>
+      </section>
+
+      <section id="production-warnings-panel" class="production-warnings" hidden>
+        <h3>Warnings</h3>
+        <ul id="production-warnings-list"></ul>
+      </section>
+
+      <section id="production-error-panel" class="production-error" hidden role="alert">
+        <h3>Production stopped</h3>
+        <p id="production-error-message"></p>
+      </section>
+
+      <div id="production-results" class="production-results" hidden>
+        <article class="creator-card">
+          <h3>Research</h3>
+          <div id="production-research"></div>
+        </article>
+        <article class="creator-card">
+          <h3>Script</h3>
+          <div id="production-script"></div>
+        </article>
+        <article class="creator-card production-storyboard-card">
+          <h3>Storyboard</h3>
+          <div id="production-storyboard" class="production-storyboard"></div>
+        </article>
+        <article class="creator-card production-media-card">
+          <h3>Generated media</h3>
+          <div id="production-media" class="production-media-grid"></div>
+        </article>
+        <article class="creator-card production-final-card">
+          <h3>Final video</h3>
+          <video id="production-final-video" controls playsinline hidden></video>
+          <p id="production-video-empty" class="fine">The final video will appear here.</p>
+        </article>
+        <article class="creator-card production-thumbnail-card">
+          <h3>Thumbnail</h3>
+          <img id="production-thumbnail" alt="Generated project thumbnail" hidden>
+          <p id="production-thumbnail-empty" class="fine">The thumbnail will appear here.</p>
+        </article>
+        <article class="creator-card production-publish-card">
+          <h3>Publishing package</h3>
+          <dl class="production-publish-fields">
+            <dt>Title</dt>
+            <dd id="production-publish-title">—</dd>
+            <dt>Description</dt>
+            <dd id="production-publish-description">—</dd>
+            <dt>Hashtags</dt>
+            <dd id="production-publish-hashtags">—</dd>
+          </dl>
+        </article>
+        <article class="creator-card production-files-card">
+          <h3>Project files</h3>
+          <div id="production-output-links" class="production-output-links"></div>
+        </article>
       </div>
     </section>
 
@@ -623,16 +800,16 @@
           <button id="close-workspace" type="button" class="small-button">Close</button>
         </div>
 
-        <div class="workspace-grid">
-          <section class="workspace-preview">
+        <div class="project-detail-grid">
+          <section class="project-detail-preview">
             <video id="workspace-video" controls playsinline></video>
-            <img id="workspace-thumbnail" alt="Project thumbnail">
+            <img id="project-detail-thumbnail" alt="Project thumbnail">
           </section>
 
-          <aside class="workspace-summary">
+          <aside class="project-detail-summary">
             <div class="summary-card">
               <span>Status</span>
-              <strong id="workspace-status">—</strong>
+              <strong id="project-detail-status">—</strong>
             </div>
             <div class="summary-card">
               <span>Quality</span>
@@ -640,7 +817,7 @@
             </div>
             <div class="summary-card">
               <span>Topic</span>
-              <strong id="workspace-topic">—</strong>
+              <strong id="project-detail-topic">—</strong>
             </div>
           </aside>
         </div>
@@ -670,9 +847,77 @@
       </div>
     </dialog>
 
+    <section id="studio-settings-panel" class="panel studio-settings-panel">
+      <p class="eyebrow">STUDIO SETTINGS</p>
+      <h2>Settings &amp; readiness</h2>
+      <p>Secrets stay in environment files. This page only reports whether they are configured.</p>
+
+      <div id="settings-readiness-summary" class="settings-readiness-summary" aria-live="polite"></div>
+      <div id="settings-configuration-summary" class="settings-configuration-summary"></div>
+
+      <form id="studio-settings-form" class="studio-settings-form">
+        <label>
+          Creative Director model
+          <input name="creative_director_model" type="text" maxlength="120">
+        </label>
+        <label>
+          Text model
+          <input name="text_model" type="text" maxlength="120">
+        </label>
+        <label>
+          Image model
+          <input name="image_model" type="text" maxlength="120">
+        </label>
+        <label>
+          TTS model
+          <input name="tts_model" type="text" maxlength="120">
+        </label>
+        <label>
+          TTS voice
+          <input name="tts_voice" type="text" maxlength="80">
+        </label>
+        <label>
+          Output resolution
+          <select name="output_resolution">
+            <option value="1080x1920">1080 × 1920</option>
+            <option value="720x1280">720 × 1280</option>
+            <option value="1920x1080">1920 × 1080</option>
+          </select>
+        </label>
+        <label>
+          Default runtime
+          <input name="default_runtime" type="number" min="20" max="180">
+        </label>
+        <label>
+          Default aspect ratio
+          <select name="default_aspect_ratio">
+            <option value="9:16">9:16</option>
+            <option value="16:9">16:9</option>
+            <option value="1:1">1:1</option>
+            <option value="4:5">4:5</option>
+          </select>
+        </label>
+        <label>
+          Local royalty-free music folder
+          <input name="local_music_folder" type="text" maxlength="240">
+        </label>
+        <label class="settings-checkbox">
+          <input name="background_music_enabled" type="checkbox">
+          Enable background music
+        </label>
+        <div class="settings-actions">
+          <button type="submit">Save safe settings</button>
+          <button id="settings-refresh" type="button" class="secondary">Refresh checks</button>
+        </div>
+        <p id="studio-settings-status" class="fine" role="status" aria-live="polite"></p>
+      </form>
+    </section>
+
   </main>
   <script src="/static/app.js"></script>
   <script src="/static/app-shell.js"></script>
+  <script src="/static/creator-workspace.js"></script>
   <script src="/static/creative-director.js"></script>
+  <script src="/static/studio-settings.js"></script>
 </body>
 </html>

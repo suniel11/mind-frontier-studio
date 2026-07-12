@@ -1,21 +1,40 @@
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
+
 from app.models import ShortScript, SeoPackage
 from app.services.openai_client import structured_response
 
+if TYPE_CHECKING:
+    from app.production.specification import ProductionSpecification
+
 INSTRUCTIONS = '''
-You are the YouTube metadata editor for Mind Frontier.
-Create accurate, concise metadata.
+You are the distribution metadata editor for Mind Frontier Studio.
+Create accurate, concise metadata suited to the requested audience, format,
+channel, and distribution context.
 Do not promise outcomes the video does not deliver.
 Use three to five relevant hashtags.
 '''
 
-def run(script: ShortScript) -> SeoPackage:
+
+def run(
+    script: ShortScript,
+    production_specification: ProductionSpecification | None = None,
+) -> SeoPackage:
+    audience = getattr(production_specification, "audience", None) or "the intended audience"
+    output_format = getattr(production_specification, "output_format", None) or "video"
+    channel_id = getattr(production_specification, "channel_id", None) or "default channel"
     return structured_response(
         instructions=INSTRUCTIONS,
         prompt=f'''
 Script:
 {script.model_dump_json(indent=2)}
 
-Create a YouTube Shorts title, a two-sentence description, and 3-5 hashtags.
+Audience: {audience}
+Format: {output_format}
+Channel: {channel_id}
+
+Create a distribution-ready title, a two-sentence description, and 3-5 hashtags.
 ''',
         schema=SeoPackage,
     )

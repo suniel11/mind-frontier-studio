@@ -29,6 +29,14 @@ Rules:
 - Select a target runtime from 20 to 180 seconds. Use 45 seconds when runtime is
   genuinely unspecified and no stronger production inference is available.
 - Provide a concise hook_type that accurately describes the opening strategy.
+- Return an execution-ready production_specification. Its original_prompt and
+  subject must preserve the user's request rather than replacing it with the
+  formatted brief. Carry every confirmed answer into the most relevant
+  structured field, and use the same target_seconds and hook strategy as the
+  top-level response.
+- Keep the production specification domain-agnostic. A protagonist is optional;
+  use protagonist_direction only when the request genuinely needs a recurring
+  character. Default aspect_ratio to 9:16 when it is unresolved.
 - Write creative_brief as clean plain text with readable section headings.
 - Include only relevant sections. Useful sections can include Creative
   Objective, Core Subject, Target Audience, Runtime, Format, Hook Strategy,

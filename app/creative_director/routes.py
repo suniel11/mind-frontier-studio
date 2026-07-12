@@ -9,6 +9,7 @@ from app.creative_director.models import (
     ProductionBrief,
     QuestionResponse,
 )
+from app.creative_director.preferences import CreatorPreferences, preference_store
 
 
 router = APIRouter(prefix="/creative-director", tags=["Creative Director"])
@@ -39,3 +40,33 @@ def creative_director_brief(payload: CreativeAnswers) -> ProductionBrief:
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Creative Director is temporarily unavailable.",
         ) from exc
+
+
+@router.get("/preferences", response_model=CreatorPreferences)
+def creative_director_preferences() -> CreatorPreferences:
+    return preference_store.load()
+
+
+@router.put("/preferences", response_model=CreatorPreferences)
+def update_creative_director_preferences(
+    payload: CreatorPreferences,
+) -> CreatorPreferences:
+    try:
+        return preference_store.update(payload.model_dump(exclude_unset=True))
+    except OSError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Creator preferences could not be saved.",
+        ) from exc
+
+
+@router.delete("/preferences")
+def clear_creative_director_preferences() -> dict[str, str]:
+    try:
+        preference_store.clear()
+    except OSError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Creator preferences could not be cleared.",
+        ) from exc
+    return {"status": "cleared"}

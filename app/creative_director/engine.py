@@ -13,6 +13,12 @@ from app.creative_director.models import (
     ProductionBrief,
     QuestionResponse,
 )
+from app.creative_director.preferences import (
+    CreatorPreferences,
+    PreferenceStore,
+    preference_store,
+)
+from app.production.specification import ProductionSpecification
 
 
 logger = logging.getLogger(__name__)
@@ -22,7 +28,10 @@ class CreativeDirectorServiceError(RuntimeError):
     """A safe error that may be translated by the HTTP layer."""
 
 
-def fallback_questionnaire(prompt: str = "") -> QuestionResponse:
+def fallback_questionnaire(
+    prompt: str = "",
+    preferences: CreatorPreferences | None = None,
+) -> QuestionResponse:
     questions = [
         DirectorQuestion(
             id="target_audience",
@@ -61,6 +70,7 @@ def fallback_questionnaire(prompt: str = "") -> QuestionResponse:
     ]
     if _duration_seconds(prompt) is not None:
         questions = [question for question in questions if question.id != "runtime"]
+    questions = _without_resolved_preference_questions(questions, preferences)
     return QuestionResponse(questions=questions)
 
 
@@ -68,23 +78,37 @@ class CreativeDirector:
     def __init__(
         self,
         llm_factory: Callable[[], CreativeDirectorLLM | None] | None = None,
+        preferences: PreferenceStore | None = None,
     ) -> None:
         self._llm_factory = llm_factory
+        self._preferences = preferences or preference_store
 
     def generate_questions(self, prompt: str) -> list[DirectorQuestion]:
         clean_prompt = CreativePrompt(prompt=prompt).prompt
+        preferences = self._preferences.load()
         llm = self._get_llm()
         if llm is None:
-            return fallback_questionnaire(clean_prompt).questions
+            return fallback_questionnaire(clean_prompt, preferences).questions
 
         try:
+            try:
+                generated = llm.generate_questions(
+                    clean_prompt,
+                    preferences=preferences.populated(),
+                )
+            except TypeError:
+                # Keep injected/legacy client adapters compatible.
+                generated = llm.generate_questions(clean_prompt)
             result = QuestionResponse.model_validate(
-                llm.generate_questions(clean_prompt)
+                generated
             )
-            return result.questions
+            return _without_resolved_preference_questions(
+                result.questions,
+                preferences,
+            )
         except Exception as exc:
             self._log_fallback("question generation", exc)
-            return fallback_questionnaire(clean_prompt).questions
+            return fallback_questionnaire(clean_prompt, preferences).questions
 
     def build_brief(
         self,
@@ -92,19 +116,39 @@ class CreativeDirector:
         answers: dict[str, Any],
     ) -> ProductionBrief:
         validated = CreativeAnswers(prompt=prompt, answers=answers)
+        effective_answers = _answers_with_preferences(
+            validated.answers,
+            self._preferences.load(),
+        )
         llm = self._get_llm()
         if llm is not None:
             try:
                 result = ProductionBrief.model_validate(
-                    llm.generate_brief(validated.prompt, validated.answers)
+                    llm.generate_brief(validated.prompt, effective_answers)
                 )
-                if _contains_raw_answers(result.creative_brief, validated.answers):
+                if _contains_raw_answers(result.creative_brief, effective_answers):
                     raise ValueError("The generated brief serialized the answer mapping.")
-                return result.model_copy(update={"topic": validated.prompt})
+                specification = result.production_specification.model_copy(
+                    update={
+                        "original_prompt": validated.prompt,
+                        "subject": result.production_specification.subject
+                        or validated.prompt,
+                        "target_seconds": result.target_seconds,
+                        "hook_strategy": result.production_specification.hook_strategy
+                        or result.hook_type,
+                        "source_brief_text": result.creative_brief,
+                    }
+                )
+                return result.model_copy(
+                    update={
+                        "topic": validated.prompt,
+                        "production_specification": specification,
+                    }
+                )
             except Exception as exc:
                 self._log_fallback("brief generation", exc)
 
-        return build_deterministic_brief(validated.prompt, validated.answers)
+        return build_deterministic_brief(validated.prompt, effective_answers)
 
     def _get_llm(self) -> CreativeDirectorLLM | None:
         factory = self._llm_factory or CreativeDirectorLLM.from_environment
@@ -207,12 +251,164 @@ def build_deterministic_brief(
     )
     if len(creative_brief) > 12000:
         creative_brief = f"{creative_brief[:11997].rstrip()}..."
+    specification = _build_specification(
+        prompt,
+        answers,
+        target_seconds=target_seconds,
+        hook_type=hook_type,
+        source_brief_text=creative_brief,
+    )
     return ProductionBrief(
         topic=prompt,
         target_seconds=target_seconds,
         hook_type=hook_type,
         creative_brief=creative_brief,
+        production_specification=specification,
     )
+
+
+def _build_specification(
+    prompt: str,
+    answers: dict[str, Any],
+    *,
+    target_seconds: int,
+    hook_type: str,
+    source_brief_text: str,
+) -> ProductionSpecification:
+    return ProductionSpecification(
+        original_prompt=prompt,
+        subject=prompt,
+        creative_objective=_answer_text(answers, "creative_objective", "objective") or None,
+        audience=_answer_text(answers, "target_audience", "audience") or None,
+        output_format=_answer_text(answers, "output_format", "format")
+        or "short-form video",
+        target_seconds=target_seconds,
+        aspect_ratio=_answer_text(answers, "aspect_ratio", "orientation") or "9:16",
+        tone=_answer_text(answers, "tone", "creative_direction", "emotion") or None,
+        narration_style=_answer_text(
+            answers,
+            "narration_style",
+            "narration_direction",
+            "narration",
+            "voice",
+        )
+        or None,
+        visual_style=_answer_text(
+            answers,
+            "visual_style",
+            "visual_direction",
+        )
+        or None,
+        pacing=_answer_text(answers, "pacing", "editing_pace") or None,
+        hook_strategy=hook_type,
+        narrative_structure=_answer_text(
+            answers,
+            "narrative_structure",
+            "structure",
+        )
+        or None,
+        ending_direction=_answer_text(answers, "ending", "ending_direction") or None,
+        music_direction=_answer_text(
+            answers,
+            "music_direction",
+            "music_preference",
+            "music",
+        )
+        or None,
+        caption_style=_answer_text(answers, "caption_style", "captions") or None,
+        accuracy_level=_answer_text(
+            answers,
+            "accuracy_level",
+            "accuracy",
+            "factual_treatment",
+        )
+        or None,
+        protagonist_direction=_answer_text(
+            answers,
+            "protagonist_direction",
+            "protagonist",
+            "character_direction",
+            "recurring_character",
+        )
+        or None,
+        production_constraints=_answer_list(
+            answers,
+            "production_constraints",
+            "constraints",
+        ),
+        negative_constraints=_answer_list(
+            answers,
+            "negative_constraints",
+            "avoid",
+        ),
+        channel_id=_safe_channel_id(_answer_text(answers, "channel_id")),
+        source_brief_text=source_brief_text,
+    )
+
+
+def _answers_with_preferences(
+    answers: dict[str, Any],
+    preferences: CreatorPreferences,
+) -> dict[str, Any]:
+    effective = dict(answers)
+    aliases = {
+        "target_seconds": ("target_seconds", "runtime", "duration"),
+        "aspect_ratio": ("aspect_ratio", "orientation"),
+        "tone": ("tone", "creative_direction", "emotion"),
+        "visual_style": ("visual_style", "visual_direction"),
+        "narration_style": (
+            "narration_style",
+            "narration_direction",
+            "narration",
+            "voice",
+        ),
+        "caption_style": ("caption_style", "captions"),
+        "music_preference": ("music_preference", "music_direction", "music"),
+    }
+    for preference_key, answer_keys in aliases.items():
+        value = getattr(preferences, preference_key)
+        if value is not None and not any(key in effective for key in answer_keys):
+            effective[preference_key] = value
+    return effective
+
+
+def _without_resolved_preference_questions(
+    questions: list[DirectorQuestion],
+    preferences: CreatorPreferences | None,
+) -> list[DirectorQuestion]:
+    if preferences is None:
+        return questions
+    resolved_ids: set[str] = set()
+    preference_question_ids = {
+        "target_seconds": {"runtime", "duration", "target_seconds"},
+        "aspect_ratio": {"aspect_ratio", "orientation"},
+        "tone": {"tone", "creative_direction"},
+        "visual_style": {"visual_style", "visual_direction"},
+        "narration_style": {"narration", "narration_style", "voice"},
+        "caption_style": {"captions", "caption_style"},
+        "music_preference": {"music", "music_direction", "music_preference"},
+    }
+    for key, ids in preference_question_ids.items():
+        if getattr(preferences, key) is not None:
+            resolved_ids.update(ids)
+    return [question for question in questions if question.id not in resolved_ids]
+
+
+def _answer_list(answers: dict[str, Any], *keys: str) -> list[str]:
+    for key in keys:
+        if key not in answers:
+            continue
+        value = answers[key]
+        values = value if isinstance(value, list) else [value]
+        result = [_format_answer(item) for item in values]
+        return [item for item in result if item][:20]
+    return []
+
+
+def _safe_channel_id(value: str) -> str | None:
+    if not value:
+        return None
+    return value if re.fullmatch(r"[A-Za-z0-9_.-]{1,100}", value) else None
 
 
 def _target_seconds(prompt: str, answers: dict[str, Any]) -> int:
