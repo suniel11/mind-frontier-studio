@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from app.visual.taxonomy import resolve_category
+
 
 def compile_prompt(scene, composition, style: dict, character_bible=None) -> str:
     negative = ""
@@ -7,11 +9,15 @@ def compile_prompt(scene, composition, style: dict, character_bible=None) -> str
         negative = getattr(character_bible, "negative_constraints", "") or ""
 
     props = ", ".join(composition.recurring_props) if composition.recurring_props else "none required"
+    category = resolve_category(composition.shot_strategy)
+    narration = str(getattr(scene, "narration", "") or "").strip()
 
     blocks = [
         f"SCENE PURPOSE: {getattr(scene, 'narrative_goal', '')}",
+        f"SCENE CONTENT: {narration}" if narration else "",
         f"STORY ROLE: {getattr(scene, 'story_role', '')}",
         f"VISUAL TYPE: {composition.shot_strategy}",
+        f"RENDER GUIDANCE: {category.prompt_guidance}",
         f"SUBJECT: {composition.subject}",
         f"ENVIRONMENT: {composition.environment}",
         f"FOREGROUND: {composition.foreground}",
@@ -39,6 +45,11 @@ def compile_prompt(scene, composition, style: dict, character_bible=None) -> str
             "NEGATIVE CONSTRAINTS: no text, no logo, no watermark, no celebrity likeness, "
             "no copyrighted character, no duplicate subject, no distorted anatomy, "
             "no random wardrobe changes, no inconsistent facial identity"
+            + (
+                ", no human figure, no presenter, no narrator on camera"
+                if not category.requires_character and character_bible is None
+                else ""
+            )
         ),
     ]
 

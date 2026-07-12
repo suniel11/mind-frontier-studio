@@ -3,6 +3,9 @@ from __future__ import annotations
 from dataclasses import dataclass, asdict
 from typing import Any
 
+from app.visual.taxonomy import resolve_category
+from app.visual.topic import topic_phrase as _topic_phrase
+
 
 @dataclass
 class SceneComposition:
@@ -37,25 +40,40 @@ def compose_scene(scene, storyboard, character_bible=None) -> SceneComposition:
         props = list(getattr(memory, "recurring_props", []) or [])
         lighting = getattr(memory, "lighting_language", "") or "natural cinematic lighting"
 
-    visual_type = str(getattr(scene, "visual_type", "character_action"))
+    visual_type = str(getattr(scene, "visual_type", "environment"))
     focus = str(getattr(scene, "subject_focus", "") or "")
+    category = resolve_category(visual_type)
 
-    if visual_type in {"environment", "architecture"}:
-        subject = focus or environment
-    elif visual_type in {"symbolic_object", "document_detail", "hands"}:
-        subject = focus or (props[0] if props else "tactile symbolic object")
-    else:
+    if category.subject_kind == "character":
+        # Only a production that actually commissioned a character bible may
+        # render a person; anything else falls back to the environment so an
+        # unrecognized or mis-set visual_type can never conjure a presenter
+        # out of nowhere.
         if character_bible is not None:
-            subject = getattr(character_bible, "prompt_anchor", "") or "fictional recurring protagonist"
+            subject = getattr(character_bible, "prompt_anchor", "") or focus or environment
         else:
-            subject = "fictional recurring protagonist"
+            subject = focus or environment
+    elif category.subject_kind == "environment":
+        subject = focus or environment
+    elif category.subject_kind == "object":
+        subject = focus or (props[0] if props else "tactile symbolic object")
+    elif category.subject_kind == "map":
+        subject = focus or _topic_phrase(scene) or environment
+    elif category.subject_kind == "abstract":
+        subject = focus or f"a symbolic visual metaphor for: {_topic_phrase(scene)}"
+    else:  # diagram / data visualization
+        subject = focus or f"an explanatory diagram of: {_topic_phrase(scene)}"
 
     foreground = {
         "environment": "subtle foreground depth element",
         "architecture": "architectural foreground frame",
         "symbolic_object": "shallow-depth foreground texture",
-        "document_detail": "paper edge and tactile material detail",
-        "hands": "natural hand and object interaction",
+        "document_or_archive": "paper edge and tactile material detail",
+        "process_diagram": "clean diagrammatic framing with clear focal hierarchy",
+        "data_visualization": "clean infographic framing",
+        "comparative_scale": "clear side-by-side scale reference",
+        "map_or_location": "cartographic or aerial framing depth",
+        "abstract_concept": "soft symbolic foreground shape",
     }.get(visual_type, "soft cinematic foreground separation")
 
     return SceneComposition(

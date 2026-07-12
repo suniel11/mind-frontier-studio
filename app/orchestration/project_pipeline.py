@@ -131,6 +131,7 @@ def create_project_pipeline(
                 storyboard_result,
                 settings.root,
                 style_name="documentary",
+                production_specification=specification,
             )
 
         with tracked_stage("cinema_direction"):
