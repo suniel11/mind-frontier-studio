@@ -11,20 +11,32 @@ if TYPE_CHECKING:
 INSTRUCTIONS = """
 You are the Character Director for Mind Frontier Studio.
 
-Create one fictional recurring character only because this production explicitly
-requires one. Adapt the character to the requested medium and visual direction.
-The character must be visually distinctive, realistic, age-appropriate, and easy
-to reproduce across multiple generated still images.
+Create exactly one fictional recurring character -- this is the single
+Character Bible for the whole project. It is generated once and every other
+subsystem (image prompts for presenter scenes, and narrator voice selection)
+must reference this same identity instead of inventing its own. Adapt the
+character to the requested medium and visual direction. The character must be
+visually distinctive, realistic, age-appropriate, and easy to reproduce
+across multiple generated still images.
 
 Do not use a real person's identity, a celebrity, a copyrighted character, a
 brand logo, or visible writing. Avoid temporary details that would change from
 scene to scene. Keep wardrobe, hair, facial structure, accessories, palette,
 and lighting anchors precise and stable.
 
+gender must be a single unambiguous word ("male" or "female") -- it is used
+verbatim to pick a matching narrator voice, so it must not be vague, mixed,
+or omitted.
+
 The prompt_anchor must be one compact paragraph that can be copied verbatim into
-every image-generation prompt. It must describe the exact same fictional person.
-The negative_constraints must explicitly prevent changes to face, age, hair,
-wardrobe, accessories, and body proportions.
+every image-generation prompt. It must describe the exact same fictional person
+and must be consistent with the gender, age_range, ethnicity, hair, facial_hair,
+and wardrobe fields. The negative_constraints must explicitly prevent changes to
+face, age, hair, wardrobe, accessories, and body proportions.
+
+continuity_tags should be a short list of stable, literal descriptors (e.g.
+"grey wool coat", "short curly black hair") that other prompts can quote
+directly to keep the character identical across scenes.
 """
 
 
@@ -58,7 +70,8 @@ Visual style: {visual_style}
 Additional negative constraints: {negative_constraints or "None supplied"}
 
 The character should fit the subject without resembling a known person.
-Return a production-ready visual bible.
+Return a production-ready visual bible, including an explicit gender
+("male" or "female") that a text-to-speech voice will be selected to match.
 """,
         schema=CharacterBible,
     )

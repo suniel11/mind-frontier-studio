@@ -4,6 +4,7 @@ import re
 from dataclasses import dataclass, asdict
 from typing import Any
 
+from app.visual.genre import presenter_frequency_cap
 from app.visual.taxonomy import VISUAL_CATEGORIES, resolve_category
 from app.visual.topic import topic_phrase
 
@@ -100,9 +101,6 @@ _DEFAULT_ROLE_PRIOR = ("environment", "symbolic_object", "abstract_concept")
 # matches, cycle through these subject-agnostic, generic-safe categories.
 _SAFE_FALLBACK_CYCLE = ("environment", "symbolic_object", "abstract_concept", "process_diagram")
 
-# At most this share of a storyboard may use a character-centric visual, and
-# only when the production actually requires a recurring character.
-_MAX_CHARACTER_SHARE = 0.34
 
 
 def _scene_text(scene) -> str:
@@ -183,8 +181,11 @@ def _select_category(decisions: list[ShotDecision], ordered_candidates: list[str
 
 def plan_shots(storyboard, production_specification=None) -> list[ShotDecision]:
     scenes = list(storyboard.scenes)
+    # Prevention, not after-the-fact replacement: the budget below caps how
+    # many scenes are ever *allowed* to become presenter/character shots, so
+    # usage can never exceed the genre's target in the first place.
     character_budget = (
-        max(1, round(len(scenes) * _MAX_CHARACTER_SHARE))
+        max(1, round(len(scenes) * presenter_frequency_cap(production_specification)))
         if _requires_character(production_specification)
         else 0
     )

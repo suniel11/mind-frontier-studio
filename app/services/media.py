@@ -1,5 +1,6 @@
 import base64
 import re
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -36,10 +37,28 @@ def _font(size: int):
     return ImageFont.load_default()
 
 
-def generate_voiceover(script: ShortScript, output_path: Path):
+# Voice pools split by the gender field on a project's Character Bible, so
+# the narrator's voice and the presenter's on-screen appearance always agree
+# instead of each subsystem picking independently.
+MALE_VOICES = ("onyx", "echo")
+FEMALE_VOICES = ("nova", "shimmer")
+
+
+def voice_for_character(character_bible, default_voice: str = OPENAI_TTS_VOICE) -> str:
+    if character_bible is None:
+        return default_voice
+    gender = str(getattr(character_bible, "gender", "") or "").strip().casefold()
+    if gender in {"male", "man", "masculine", "m"}:
+        return MALE_VOICES[0]
+    if gender in {"female", "woman", "feminine", "f"}:
+        return FEMALE_VOICES[0]
+    return default_voice
+
+
+def generate_voiceover(script: ShortScript, output_path: Path, voice: str = OPENAI_TTS_VOICE):
     response = get_openai_client().audio.speech.create(
         model=OPENAI_TTS_MODEL,
-        voice=OPENAI_TTS_VOICE,
+        voice=voice,
         input=script.voiceover,
         instructions=(
             "Calm, thoughtful documentary narration. "
@@ -460,7 +479,12 @@ def render_video(
     _mux_audio(ffmpeg, captioned_video, mastered_audio, output_path)
 
 
-def build_video(project_dir: Path, script: ShortScript, storyboard: Storyboard) -> Path:
+def build_video(
+    project_dir: Path,
+    script: ShortScript,
+    storyboard: Storyboard,
+    narration_audio_path: Path | None = None,
+) -> Path:
     graph = RenderGraph(project_dir)
     graph.mark("storyboard", "ready", detail=f"{len(storyboard.scenes)} scenes")
 
@@ -468,7 +492,13 @@ def build_video(project_dir: Path, script: ShortScript, storyboard: Storyboard) 
     media_dir.mkdir(exist_ok=True)
 
     audio_path = media_dir / "voiceover.mp3"
-    generate_voiceover(script, audio_path)
+    if narration_audio_path is not None:
+        # Narration was already synthesized (and its measured duration used
+        # to time the scenes) by the voice_generation stage -- reuse it
+        # instead of generating a second, untimed narration here.
+        shutil.copyfile(narration_audio_path, audio_path)
+    else:
+        generate_voiceover(script, audio_path)
     graph.mark("voiceover", "complete", output=str(audio_path))
 
     images = []

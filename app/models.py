@@ -66,14 +66,19 @@ class ShortScript(BaseModel):
 class CharacterBible(BaseModel):
     name: str
     narrative_role: str
+    gender: str
     age_range: str
     facial_features: str
     hair: str
+    facial_hair: str = ""
     wardrobe: str
     accessories: str
+    ethnicity: str = ""
     body_language: str
     color_palette: str
     lighting_anchor: str
+    visual_style: str = ""
+    continuity_tags: List[str] = Field(default_factory=list)
     prompt_anchor: str
     negative_constraints: str
 

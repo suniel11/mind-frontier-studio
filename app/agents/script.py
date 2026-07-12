@@ -71,3 +71,36 @@ The ending should follow the requested ending direction and feel conclusive rath
 ''',
         schema=ShortScript,
     )
+
+
+RESIZE_INSTRUCTIONS = '''
+You are the Script Agent for Mind Frontier, doing a length correction pass.
+A narration you previously wrote was measured against the target runtime and
+came out the wrong length. Rewrite only the voiceover to hit the new word
+count as closely as possible while preserving the same title, hook idea,
+core argument, and ending. Do not pad with filler or repetition -- add or
+remove genuine content, examples, or elaboration.
+'''
+
+
+def resize(script: ShortScript, target_words: int) -> ShortScript:
+    """Rewrite ``script.voiceover`` to land near ``target_words``.
+
+    Used when a synthesized narration's measured duration misses the
+    requested runtime by more than the pipeline's tolerance -- the fix
+    targets the actual cause (a script sized wrong) instead of only
+    stretching or cropping the rendered video to whatever length the
+    narration happened to come out to.
+    """
+
+    return structured_response(
+        instructions=RESIZE_INSTRUCTIONS,
+        prompt=f'''
+Current script:
+{script.model_dump_json(indent=2)}
+
+Rewrite the voiceover to approximately {target_words} words.
+Keep the title, hook, and ending direction consistent with the original.
+''',
+        schema=ShortScript,
+    )

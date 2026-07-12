@@ -3,6 +3,10 @@ from __future__ import annotations
 from dataclasses import dataclass, asdict
 from typing import Any
 
+from app.narrative.duration_planning import MIN_SCENES
+
+_VALID_MIDDLE_ROLES = {"setup", "conflict", "insight", "resolution"}
+
 
 @dataclass
 class QualityIssue:
@@ -36,6 +40,7 @@ def inspect_project(
     script,
     storyboard,
     character_bible=None,
+    requires_character: bool = True,
 ) -> QualityReport:
     issues: list[QualityIssue] = []
     recommendations: list[str] = []
@@ -50,17 +55,22 @@ def inspect_project(
 
     scenes = list(getattr(storyboard, "scenes", []) or [])
     story_score = 95
-    expected_roles = ["hook", "setup", "tension", "expansion", "climax", "resolution"]
     roles = [str(getattr(scene, "story_role", "")).lower() for scene in scenes]
-    if len(scenes) != 6:
+    if len(scenes) < MIN_SCENES:
         story_score -= 18
-        issues.append(QualityIssue("story", "high", f"Expected 6 scenes, found {len(scenes)}."))
-    if roles and roles != expected_roles[:len(roles)]:
-        story_score -= 10
-        issues.append(QualityIssue("story", "medium", "Scene roles do not follow the intended six-beat arc."))
+        issues.append(QualityIssue("story", "high", f"Expected at least {MIN_SCENES} scenes, found {len(scenes)}."))
+    if roles:
+        valid_arc = (
+            roles[0] == "hook"
+            and roles[-1] == "final_line"
+            and all(role in _VALID_MIDDLE_ROLES for role in roles[1:-1])
+        )
+        if not valid_arc:
+            story_score -= 10
+            issues.append(QualityIssue("story", "medium", "Scene roles do not follow the intended hook/.../final_line arc."))
 
     continuity_score = 94
-    if character_bible is None:
+    if character_bible is None and requires_character:
         continuity_score -= 20
         issues.append(QualityIssue("character", "high", "Character Bible is missing."))
     for scene in scenes:

@@ -19,7 +19,7 @@ def _run(command: list[str], error_message: str) -> None:
         raise RuntimeError(f"{error_message}: {completed.stderr[-2200:]}")
 
 
-def _probe_duration(ffmpeg: str, audio_path: Path) -> float:
+def probe_duration(ffmpeg: str, audio_path: Path) -> float:
     completed = subprocess.run(
         [ffmpeg, "-i", str(audio_path)],
         capture_output=True,
@@ -34,6 +34,10 @@ def _probe_duration(ffmpeg: str, audio_path: Path) -> float:
 
     hours, minutes, seconds = match.groups()
     return int(hours) * 3600 + int(minutes) * 60 + float(seconds)
+
+
+# Back-compat alias for the previous private name.
+_probe_duration = probe_duration
 
 
 def _find_music_track(project_dir: Path) -> Path | None:

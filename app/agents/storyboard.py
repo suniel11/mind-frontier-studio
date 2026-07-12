@@ -4,6 +4,7 @@ import json
 from typing import TYPE_CHECKING
 
 from app.models import CharacterBible, ShortScript, Storyboard
+from app.narrative.duration_planning import scenes_for_duration
 from app.services.openai_client import structured_response
 
 if TYPE_CHECKING:
@@ -12,8 +13,11 @@ if TYPE_CHECKING:
 
 INSTRUCTIONS = """
 You are the Visual Director for Mind Frontier Studio.
-Convert narration into six coherent scenes that can be produced as generated
-still imagery and assembled into a finished video.
+Convert narration into a coherent sequence of scenes that can be produced as
+generated still imagery and assembled into a finished video. The exact number
+of scenes will be specified in the request -- it scales with the target
+duration, so longer productions get more scenes rather than a few scenes held
+on screen for a long time.
 
 Respect the supplied format, aspect ratio, visual style, tone, pacing,
 constraints, and whether a recurring character is actually required. Never
@@ -26,13 +30,11 @@ image prompts. On-screen text must be brief. Scene timing must be continuous and
 cover the full target duration. Each image prompt must describe one concrete,
 renderable composition.
 
-Build a continuous six-beat arc:
-1. Hook
-2. Setup
-3. Conflict
-4. Insight
-5. Resolution
-6. Final line
+Build a continuous narrative arc:
+1. Hook (scene 1 only)
+2. A cycle of setup, conflict, insight, and resolution beats repeated as many
+   times as needed to fill the requested scene count
+3. Final line (last scene only)
 
 Create a Visual Memory before writing scenes. It must lock relevant locations,
 recurring props, production design, time of day, atmosphere, palette, lighting,
@@ -81,10 +83,12 @@ def run(
     character_bible: CharacterBible | None = None,
     production_specification: ProductionSpecification | None = None,
 ) -> Storyboard:
+    scene_count = scenes_for_duration(target_seconds)
     return structured_response(
         instructions=INSTRUCTIONS,
         prompt=f"""
 Target duration: {target_seconds} seconds
+Required scene count: {scene_count}
 
 Script:
 {script.model_dump_json(indent=2)}
@@ -100,9 +104,15 @@ Continuity enforcement:
 - Scene-to-scene changes must be motivated by the story.
 - Every image_prompt must explicitly include its continuity_anchor.
 
-Create exactly six scenes for compatibility with the current render engine.
-The first begins at second 0 and the last ends at second {target_seconds}.
-Use portions of the narration in each scene.
+Create exactly {scene_count} scenes. The first begins at second 0 and the
+last ends at second {target_seconds}. Use portions of the narration in each
+scene, distributing the full script across all {scene_count} scenes so no
+scene is left with little or no narration.
+
+Scene 1 must use story_role "hook" and the last scene must use story_role
+"final_line". Every scene in between must use one of: setup, conflict,
+insight, resolution -- reused as many times as needed; do not invent other
+role names.
 
 Before the scenes, create visual_memory and story_arc_summary.
 
