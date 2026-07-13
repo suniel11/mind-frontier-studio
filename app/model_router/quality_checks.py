@@ -7,6 +7,7 @@ from typing import Callable
 from app.creative_director.models import ProductionBrief, QuestionResponse
 from app.models import CharacterBible, ResearchBrief, SeoPackage, ShortScript, Storyboard
 from app.narrative.duration_planning import scenes_for_duration
+from app.visual_continuity.models import VisualAssetPlan
 
 _PLACEHOLDER_MARKERS = (
     "lorem ipsum",
@@ -274,6 +275,47 @@ def validate_seo(seo: SeoPackage, *, max_hashtags: int = 8) -> ValidationResult:
             reasons.append(f"malformed hashtag {tag!r}")
 
     return fail(*reasons) if reasons else ok()
+
+
+# ---------------------------------------------------------------------------
+# Visual Asset Economy v3 -- Visual Continuity Planner
+# ---------------------------------------------------------------------------
+
+
+def validate_visual_asset_plan(plan: VisualAssetPlan, *, scene_numbers: list[int]) -> ValidationResult:
+    """Structural-only validation of the LLM's raw grouping proposal.
+
+    Deliberately does not judge semantic correctness (whether a merge makes
+    cinematic sense) -- that is the model's job at generation time and the
+    deterministic constraint enforcement's job afterward
+    (app.visual_continuity.planner). This only rejects a plan that is
+    unusable: scenes missing, duplicated, or unjustified reuse -- anything
+    that would make constraint enforcement unsafe to run.
+    """
+
+    reasons: list[str] = []
+    seen: set[int] = set()
+    for group in plan.groups:
+        if not group.scene_numbers:
+            reasons.append(f"group {group.group_id!r} has no scenes")
+            continue
+        for number in group.scene_numbers:
+            if number in seen:
+                reasons.append(f"scene {number} assigned to more than one group")
+            seen.add(number)
+        if not group.canonical_prompt.strip():
+            reasons.append(f"group {group.group_id!r} has an empty canonical_prompt")
+        if len(group.scene_numbers) > 1 and not group.justification.strip():
+            reasons.append(f"group {group.group_id!r} reuses an asset with no semantic justification")
+
+    if seen != set(scene_numbers):
+        reasons.append("plan does not cover exactly the storyboard's scenes")
+
+    return fail(*reasons) if reasons else ok()
+
+
+def visual_asset_plan_validator(*, scene_numbers: list[int]) -> Callable[[VisualAssetPlan], ValidationResult]:
+    return lambda plan: validate_visual_asset_plan(plan, scene_numbers=scene_numbers)
 
 
 # ---------------------------------------------------------------------------

@@ -25,6 +25,7 @@ class Stage(str, Enum):
     CHARACTER = "character"
     VISUAL_DIRECTOR = "visual_director"
     PROMPT_COMPILER = "prompt_compiler"
+    VISUAL_CONTINUITY_PLANNER = "visual_continuity_planner"
     SEO = "seo"
     QUALITY_REVIEW = "quality_review"
     MEMORY = "memory"

@@ -129,6 +129,13 @@ class Scene(BaseModel):
     focus_target: str = ""
     film_look: str = ""
 
+    # Visual Asset Economy v3 (app.visual_continuity): the Visual Asset
+    # Group this scene's image_prompt was resolved to. Empty means the
+    # scene has its own unique image (identity plan / feature disabled) --
+    # existing storyboards from before this feature default to "" and are
+    # unaffected.
+    visual_asset_group_id: str = ""
+
 class Storyboard(BaseModel):
     visual_memory: VisualMemory
     story_arc_summary: str

@@ -31,6 +31,8 @@ from app.narration.instructions import build_narration_instructions
 from app.narration.pauses import plan_pauses
 from app.narration.pronunciation import apply_pronunciation_hints
 from app.rendering.graph import RenderGraph
+from app.visual_continuity.cache import ImageAssetCache, cache_key
+from app.visual_continuity.config import image_cache_enabled
 
 if TYPE_CHECKING:
     from app.production.preferences import UserCreativePreferences
@@ -589,12 +591,22 @@ def _generate_scene_images(
     aspect_ratio: str,
     cancellation_check: Callable[[], bool] | None = None,
 ) -> list[Path]:
-    """Generate every scene's image concurrently instead of one at a time.
+    """Generate one image per unique scene.image_prompt, concurrently, and
+    copy the result to every other scene that shares that prompt.
 
-    Each call is an independent OpenAI network request writing to its own
-    file -- there is no shared state or ordering dependency between scenes
-    -- so this is safe to parallelize; output is identical to the old
-    sequential loop, just faster. Bounded to
+    Visual Asset Economy v3 (app.visual_continuity) may have already
+    resolved several scenes to the exact same image_prompt (a shared
+    Anchor Shot) before this runs -- when it has, this only makes one real
+    OpenAI request for the whole group and locally copies the bytes for
+    the rest, which is where the actual API-call and render-time savings
+    come from. When every scene has its own unique prompt (the feature
+    disabled, or a plan that never merged anything), this behaves exactly
+    like the old one-request-per-scene loop. Set IMAGE_CACHE_ENABLED=false
+    to force a fresh request per scene even for identical prompts.
+
+    Each real generation call is an independent OpenAI network request
+    writing to its own file -- there is no shared state or ordering
+    dependency between them -- so this is safe to parallelize; bounded to
     ``MAX_CONCURRENT_IMAGE_GENERATIONS`` workers to stay well within
     typical account rate limits. Results are always returned in scene
     order, regardless of completion order, so callers (render_video) don't
@@ -611,13 +623,27 @@ def _generate_scene_images(
         raise RenderCancelled("Rendering cancelled before scene image generation.")
 
     image_paths = [media_dir / f"scene-{scene.number:02d}.jpg" for scene in storyboard.scenes]
-    worker_count = max(1, min(MAX_CONCURRENT_IMAGE_GENERATIONS, len(storyboard.scenes)))
+    cache_enabled = image_cache_enabled()
+    cache = ImageAssetCache()
+
+    scene_keys: list[str] = []
+    for index, scene in enumerate(storyboard.scenes):
+        key = (
+            cache_key(scene.image_prompt, aspect_ratio=aspect_ratio, quality="low")
+            if cache_enabled
+            else f"__uncached_scene_{index}"
+        )
+        scene_keys.append(key)
+        cache.put(key, index)
+
+    generation_indices = sorted({cache.get(key) for key in scene_keys})
+    worker_count = max(1, min(MAX_CONCURRENT_IMAGE_GENERATIONS, len(generation_indices)))
 
     with ThreadPoolExecutor(max_workers=worker_count, thread_name_prefix="scene-image") as executor:
         futures = {
             executor.submit(
                 generate_scene_image,
-                scene.image_prompt,
+                storyboard.scenes[index].image_prompt,
                 image_paths[index],
                 width=width,
                 height=height,
@@ -625,7 +651,7 @@ def _generate_scene_images(
                 aspect_ratio=aspect_ratio,
                 cancellation_check=cancellation_check,
             ): index
-            for index, scene in enumerate(storyboard.scenes)
+            for index in generation_indices
         }
         first_error: BaseException | None = None
         for future in as_completed(futures):
@@ -636,6 +662,11 @@ def _generate_scene_images(
                     first_error = exc
         if first_error is not None:
             raise first_error
+
+    for index, key in enumerate(scene_keys):
+        source_index = cache.get(key)
+        if source_index is not None and source_index != index:
+            shutil.copyfile(image_paths[source_index], image_paths[index])
 
     return image_paths
 

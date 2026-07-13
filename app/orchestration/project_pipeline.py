@@ -39,6 +39,8 @@ from app.services.audio import probe_duration
 from app.services.media import build_video, gender_for_voice, generate_voiceover
 from app.services.project_store import make_project_id, save_project
 from app.visual.pipeline import apply_visual_storytelling
+from app.visual_continuity.planner import plan_visual_assets
+from app.visual_continuity.telemetry import save_visual_asset_report
 
 
 class PipelineCancelledError(RuntimeError):
@@ -187,6 +189,20 @@ def create_project_pipeline(
                 style_name="documentary",
             )
 
+        with tracked_stage("visual_continuity"):
+            # Visual Asset Economy v3: decide which adjacent scenes are the
+            # same visual moment and can share one generated image (each
+            # presented with a different camera treatment). Runs after
+            # prompt_compilation so it sees every scene's final, compiled
+            # image_prompt. Safe by construction -- disabled, a provider
+            # failure, or a structurally unusable plan all degrade to
+            # today's one-image-per-scene behavior (see
+            # app.visual_continuity.planner._identity_plan).
+            visual_asset_plan = plan_visual_assets(
+                storyboard_result,
+                target_seconds=specification.target_seconds,
+            )
+
         with tracked_stage("seo"):
             seo_result = seo.run(
                 script_result,
@@ -213,6 +229,7 @@ def create_project_pipeline(
             # resize during voice_generation) adds more calls.
             save_model_usage(project_dir, project_id)
             save_cinema_report(project_dir, cinema_report)
+            save_visual_asset_report(project_dir, visual_asset_plan, storyboard_result)
 
         with tracked_stage("voice_generation"):
             # Narration is synthesized here (not inside the renderer) so its
