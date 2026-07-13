@@ -204,6 +204,7 @@ def create_project_pipeline(
             visual_asset_plan, visual_asset_planner_meta = plan_visual_assets(
                 storyboard_result,
                 target_seconds=specification.target_seconds,
+                production_specification=specification,
             )
 
         with tracked_stage("seo"):

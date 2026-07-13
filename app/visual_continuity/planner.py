@@ -10,9 +10,41 @@ from app.model_router.quality_checks import visual_asset_plan_validator
 from app.model_router.stages import Stage
 from app.visual_continuity import config as vc_config
 from app.visual_continuity import cost_guard
+from app.visual_continuity import plan_cache
 from app.visual_continuity.models import VisualAssetGroup, VisualAssetPlan
 from app.visual_continuity.repetition import repetition_risk
 from app.visual_continuity.shots import assign_shot_variations
+
+# Bump whenever INSTRUCTIONS (or any other input that changes what the
+# planner is actually being asked) changes -- it's part of the plan
+# cache's key (app.visual_continuity.plan_cache.cache_key), so a prompt
+# change automatically invalidates every previously cached plan instead of
+# silently reusing a decision made under different instructions.
+PROMPT_VERSION = "3.1.1"
+
+# OpenAI's reasoning-model families (gpt-5*, o1*, o3*, o4*) reject
+# temperature/top_p outright on the Responses API -- verified directly
+# against gpt-5-mini (2026-07-13): a plain 400 "Unsupported parameter:
+# 'temperature' is not supported with this model." The Responses API also
+# has no `seed` parameter at all in this SDK version (openai==1.76.0,
+# checked via inspect.signature(Responses.parse)), so temperature is the
+# only sampling-variance lever available at all, and only for models that
+# actually accept it.
+_NO_SAMPLING_CONTROL_PREFIXES = ("gpt-5", "o1", "o3", "o4")
+
+
+def _model_supports_sampling_controls(model: str) -> bool:
+    """Best-effort, name-based capability check -- there is no live
+    "does this model accept temperature" API to query instead. If this
+    guess is ever wrong (a future reasoning model with an unrecognized
+    name prefix), the resulting BadRequestError is caught by
+    plan_visual_assets' existing catch-all and safely degrades to the
+    identity plan -- a stale guess can only skip the determinism
+    improvement, never break production."""
+
+    normalized = model.strip().lower()
+    return not any(normalized.startswith(prefix) for prefix in _NO_SAMPLING_CONTROL_PREFIXES)
+
 
 INSTRUCTIONS = """
 You are the Visual Continuity Planner for Mind Frontier Studio.
@@ -287,26 +319,40 @@ def _base_meta(*, enabled: bool, model: str | None, disabled_reason: str | None)
         "planner_input_tokens": None,
         "planner_output_tokens": None,
         "planner_execution_time": 0.0,
+        "planner_cache_hit": False,
         "debug": None,
     }
 
 
-def plan_visual_assets(storyboard, *, target_seconds: int) -> tuple[VisualAssetPlan, dict]:
+def plan_visual_assets(
+    storyboard, *, target_seconds: int, production_specification=None
+) -> tuple[VisualAssetPlan, dict]:
     """Build (and apply to ``storyboard`` in place) the Visual Asset
     Economy v3 plan: which scenes share a generated image, each scene's
     resolved image_prompt, and each scene's shot-variation motion_type.
 
     Returns ``(plan, meta)`` -- ``meta`` carries the planner's own
-    execution cost (model, tokens, wall-clock time, and whether/why
-    grouping ended up disabled for this project) so telemetry can answer
-    "did this planner actually save more than it cost?" without a second
-    LLM call.
+    execution cost (model, tokens, wall-clock time, whether the result
+    came from the plan cache, and whether/why grouping ended up disabled
+    for this project) so telemetry can answer "did this planner actually
+    save more than it cost?" without a second LLM call.
+
+    Before calling the model, checks a deterministic, persistent cache
+    (app.visual_continuity.plan_cache) keyed by the complete storyboard
+    content, ``production_specification``, the planner's prompt version,
+    the resolved model, and the grouping configuration -- an identical
+    input to a previous call reuses that stored plan instead of calling
+    the model again, at zero token/time cost. On a cache miss, the model
+    is called with temperature=0 whenever the resolved model is verified
+    to accept it (see _model_supports_sampling_controls) to make a fresh
+    call as stable as the API allows.
 
     Safe by construction: disabled, a provider failure, a structurally
     unusable model output, or the Planner Cost Guard (grouping not
-    economically worth its own cost) all degrade to the identity plan
-    (today's unmodified one-image-per-scene behavior) rather than ever
-    risking a broken, lower-quality, or money-losing production.
+    economically worth its own cost, in dollars or in time) all degrade to
+    the identity plan (today's unmodified one-image-per-scene behavior)
+    rather than ever risking a broken, lower-quality, or money/time-losing
+    production.
     """
 
     debug_enabled = vc_config.debug_enabled()
@@ -319,58 +365,99 @@ def plan_visual_assets(storyboard, *, target_seconds: int) -> tuple[VisualAssetP
     project_id = _current_project_id()
     attempted_model = model_router.resolve(Stage.VISUAL_CONTINUITY_PLANNER, project_id=project_id).attempted_model
     scene_numbers = [scene.number for scene in storyboard.scenes]
+    max_consecutive_reuse = vc_config.max_consecutive_reuse()
+    min_confidence = vc_config.min_grouping_confidence()
 
-    start = time.monotonic()
-    try:
-        result = run_agent_stage(
-            Stage.VISUAL_CONTINUITY_PLANNER,
-            instructions=INSTRUCTIONS,
-            prompt=_prompt_for(storyboard, target_seconds=target_seconds),
-            schema=VisualAssetPlan,
-            validate=visual_asset_plan_validator(scene_numbers=scene_numbers),
-        )
-    except Exception:
-        # Planning is an optimization on top of a working pipeline, never a
-        # hard dependency -- any failure must degrade to the identity plan,
-        # never break or delay production.
-        elapsed = time.monotonic() - start
-        plan = _identity_plan(storyboard)
-        _apply_plan_to_scenes(plan, storyboard)
-        meta = _base_meta(enabled=True, model=attempted_model, disabled_reason="provider_error")
-        meta["planner_execution_time"] = round(elapsed, 4)
-        return plan, meta
-
-    elapsed = time.monotonic() - start
-    record = _last_usage_record(project_id)
-    meta = _base_meta(enabled=True, model=record.final_model if record else attempted_model, disabled_reason=None)
-    meta["planner_execution_time"] = round(elapsed, 4)
-    meta["planner_input_tokens"] = record.input_tokens if record else None
-    meta["planner_output_tokens"] = record.output_tokens if record else None
+    key = plan_cache.cache_key(
+        storyboard=storyboard,
+        production_specification=production_specification,
+        prompt_version=PROMPT_VERSION,
+        model=attempted_model,
+        max_consecutive_reuse=max_consecutive_reuse,
+        min_grouping_confidence=min_confidence,
+    )
 
     debug_log: list | None = [] if debug_enabled else None
+    raw_plan_for_debug: VisualAssetPlan | None = None
 
-    if result.validation is not None and not result.validation.passed:
-        plan = _identity_plan(storyboard)
-        meta["planner_disabled_reason"] = "malformed_planner_output"
+    cached_plan = plan_cache.get(key)
+    if cached_plan is not None:
+        enforced_plan = cached_plan
+        raw_plan_for_debug = cached_plan
+        meta = _base_meta(enabled=True, model=attempted_model, disabled_reason=None)
+        meta["planner_cache_hit"] = True
+        meta["planner_input_tokens"] = 0
+        meta["planner_output_tokens"] = 0
+        meta["planner_execution_time"] = 0.0
         if debug_log is not None:
-            debug_log.append({"decision": "identity_fallback", "reason": "validation failed"})
+            debug_log.append({"decision": "cache_hit", "cache_key": key})
     else:
-        raw_plan = result.output
-        plan = _enforce_constraints(
-            raw_plan,
-            storyboard,
-            max_consecutive_reuse=vc_config.max_consecutive_reuse(),
-            min_confidence=vc_config.min_grouping_confidence(),
-            debug_log=debug_log,
-        )
+        temperature = 0.0 if _model_supports_sampling_controls(attempted_model) else None
 
+        start = time.monotonic()
+        try:
+            result = run_agent_stage(
+                Stage.VISUAL_CONTINUITY_PLANNER,
+                instructions=INSTRUCTIONS,
+                prompt=_prompt_for(storyboard, target_seconds=target_seconds),
+                schema=VisualAssetPlan,
+                validate=visual_asset_plan_validator(scene_numbers=scene_numbers),
+                temperature=temperature,
+            )
+        except Exception:
+            # Planning is an optimization on top of a working pipeline,
+            # never a hard dependency -- any failure must degrade to the
+            # identity plan, never break or delay production.
+            elapsed = time.monotonic() - start
+            plan = _identity_plan(storyboard)
+            _apply_plan_to_scenes(plan, storyboard)
+            meta = _base_meta(enabled=True, model=attempted_model, disabled_reason="provider_error")
+            meta["planner_execution_time"] = round(elapsed, 4)
+            return plan, meta
+
+        elapsed = time.monotonic() - start
+        record = _last_usage_record(project_id)
+        meta = _base_meta(enabled=True, model=record.final_model if record else attempted_model, disabled_reason=None)
+        meta["planner_execution_time"] = round(elapsed, 4)
+        meta["planner_input_tokens"] = record.input_tokens if record else None
+        meta["planner_output_tokens"] = record.output_tokens if record else None
+
+        if result.validation is not None and not result.validation.passed:
+            enforced_plan = _identity_plan(storyboard)
+            raw_plan_for_debug = result.output
+            meta["planner_disabled_reason"] = "malformed_planner_output"
+            if debug_log is not None:
+                debug_log.append({"decision": "identity_fallback", "reason": "validation failed"})
+        else:
+            raw_plan_for_debug = result.output
+            enforced_plan = _enforce_constraints(
+                result.output,
+                storyboard,
+                max_consecutive_reuse=max_consecutive_reuse,
+                min_confidence=min_confidence,
+                debug_log=debug_log,
+            )
+            # Only a genuinely-planned (non-malformed) result is worth
+            # remembering -- caching an identity fallback would just make
+            # every future identical input skip planning forever, even
+            # after a transient validation hiccup is long past.
+            plan_cache.put(key, enforced_plan)
+            if debug_log is not None:
+                debug_log.append({"decision": "cache_store", "cache_key": key})
+
+    # From here, `enforced_plan` and `meta` are populated on both the
+    # cache-hit and cache-miss paths -- apply the cost/time guard
+    # uniformly (a cache hit costs ~$0/0s, so it will almost always pass;
+    # it still runs, since the cached plan's reuse counts still need this
+    # same zero-reuse/negative-net handling).
+    if meta["planner_disabled_reason"] is None:
         guard = cost_guard.evaluate(
             planner_input_tokens=meta["planner_input_tokens"],
             planner_output_tokens=meta["planner_output_tokens"],
-            reused_images=_reused_image_count(plan),
+            reused_images=_reused_image_count(enforced_plan),
             planner_execution_time=meta["planner_execution_time"],
         )
-        if guard.should_disable_grouping and _reused_image_count(plan) > 0:
+        if guard.should_disable_grouping and _reused_image_count(enforced_plan) > 0:
             meta["planner_disabled_reason"] = (
                 "cost_guard_triggered" if guard.should_disable_for_cost else "cost_guard_time_negative"
             )
@@ -384,12 +471,16 @@ def plan_visual_assets(storyboard, *, target_seconds: int) -> tuple[VisualAssetP
                     }
                 )
             plan = _identity_plan(storyboard)
+        else:
+            plan = enforced_plan
+    else:
+        plan = enforced_plan
 
-        if debug_enabled:
-            meta["debug"] = {
-                "raw_plan": raw_plan.model_dump(),
-                "decisions": debug_log or [],
-            }
+    if debug_enabled:
+        meta["debug"] = {
+            "raw_plan": raw_plan_for_debug.model_dump() if raw_plan_for_debug is not None else None,
+            "decisions": debug_log or [],
+        }
 
     _apply_plan_to_scenes(plan, storyboard)
     return plan, meta

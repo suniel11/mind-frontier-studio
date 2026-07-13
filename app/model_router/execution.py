@@ -57,6 +57,7 @@ def _call_once(
     model: str,
     client,
     sleep: Callable[[float], None],
+    temperature: float | None = None,
 ):
     """Call ``model`` once, with bounded retry for transient/timeout errors.
 
@@ -74,6 +75,7 @@ def _call_once(
                 model=model,
                 client=client,
                 return_usage=True,
+                temperature=temperature,
             )
             return output, usage_info, None, None, attempt
         except Exception as exc:  # noqa: BLE001 - classified immediately below
@@ -94,6 +96,7 @@ def run_agent_stage(
     validate: Callable[[object], ValidationResult],
     client=None,
     sleep: Callable[[float], None] = time.sleep,
+    temperature: float | None = None,
 ) -> StageExecutionResult:
     """Run one text-model stage with cost-aware routing and baseline
     quality fallback (Phases 3, 6, 8, 9, 10).
@@ -105,6 +108,12 @@ def run_agent_stage(
        a circuit-breaker failure + a project-level fallback event, then
        rerun once on ``baseline_model`` and use *that* output unconditionally.
     4. Record local usage telemetry (no prompts, no secrets) either way.
+
+    ``temperature`` is passed straight through to every underlying call
+    (both the initial attempt and any baseline fallback attempt) and
+    omitted entirely when ``None`` -- unused by any existing caller, opt-in
+    only for stages that have verified the resolved model actually accepts
+    it (see app.services.openai_client.structured_response).
 
     Raises the underlying exception only when the *baseline* attempt itself
     fails -- there is nothing left to fall back to at that point.
@@ -123,6 +132,7 @@ def run_agent_stage(
         model=selection.attempted_model,
         client=client,
         sleep=sleep,
+        temperature=temperature,
     )
 
     validation: ValidationResult | None = None
@@ -232,6 +242,7 @@ def run_agent_stage(
         model=selection.baseline_model,
         client=client,
         sleep=sleep,
+        temperature=temperature,
     )
     retries += baseline_retries
     latency = time.monotonic() - start

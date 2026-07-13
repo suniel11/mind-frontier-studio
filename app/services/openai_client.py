@@ -31,6 +31,7 @@ def structured_response(
     model: str | None = None,
     client=None,
     return_usage: bool = False,
+    temperature: float | None = None,
 ):
     """Request schema-validated structured output.
 
@@ -39,14 +40,26 @@ def structured_response(
     caller is unaffected. ``app.model_router.execution`` passes both
     explicitly to run a stage against a specific routed model (and, for the
     Creative Director, a dedicated client instance).
+
+    ``temperature`` is omitted from the request entirely unless explicitly
+    given (``None`` -> today's exact behavior for every existing caller).
+    Only pass it for models actually known to accept it -- OpenAI's
+    reasoning-model families (gpt-5*, o1*, o3*, o4*) reject it outright
+    with a 400 error on the Responses API (verified directly against
+    gpt-5-mini), so callers must check model capability first (see
+    app.visual_continuity.planner._model_supports_sampling_controls).
     """
 
     resolved_client = client or get_openai_client()
+    optional_kwargs = {}
+    if temperature is not None:
+        optional_kwargs["temperature"] = temperature
     response = resolved_client.responses.parse(
         model=model or OPENAI_TEXT_MODEL,
         instructions=instructions,
         input=prompt,
         text_format=schema,
+        **optional_kwargs,
     )
     if response.output_parsed is None:
         raise RuntimeError("The model returned no structured output.")

@@ -14,13 +14,15 @@ from app.models import Scene, Storyboard, VisualMemory
 from app.services import media
 from app.services.cancellation import RenderCancelled
 from app.services.rate_limiter import SlidingWindowRateLimiter
-from app.visual_continuity import cost_guard
+from app.visual_continuity import cost_guard, plan_cache
 from app.visual_continuity.cache import ImageAssetCache, cache_key
 from app.visual_continuity.models import VisualAssetGroup, VisualAssetPlan
 from app.visual_continuity.planner import (
+    PROMPT_VERSION,
     _apply_plan_to_scenes,
     _enforce_constraints,
     _identity_plan,
+    _model_supports_sampling_controls,
     plan_visual_assets,
 )
 from app.visual_continuity.repetition import repetition_risk
@@ -54,6 +56,23 @@ def _permissive_rate_limit(monkeypatch):
     monkeypatch.setattr(
         media, "_image_rate_limiter", SlidingWindowRateLimiter(max_calls=10_000, period_seconds=60.0)
     )
+    yield
+
+
+@pytest.fixture(autouse=True)
+def _isolated_plan_cache(tmp_path, monkeypatch):
+    # The plan cache is deliberately persistent (studio_memory/ on disk) so
+    # identical input is stable across process restarts -- but that means
+    # tests must never share it with each other or with the real on-disk
+    # cache, or one test's stored plan would silently satisfy another
+    # test's "cache miss" expectation (or pollute real production data).
+    cache_dir = tmp_path / "visual_continuity_cache"
+
+    def _fake_cache_dir():
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        return cache_dir
+
+    monkeypatch.setattr(plan_cache, "_cache_dir", _fake_cache_dir)
     yield
 
 
@@ -926,3 +945,231 @@ def test_debug_mode_disabled_by_default_writes_nothing(tmp_path, monkeypatch):
     _plan, meta = plan_visual_assets(storyboard, target_seconds=9)
     assert meta["debug"] is None
     assert save_visual_continuity_debug(tmp_path, meta) is None
+
+
+# ---------------------------------------------------------------------------
+# v3.2: sampling-variance reduction (temperature, only where supported)
+# ---------------------------------------------------------------------------
+
+
+def test_reasoning_models_are_not_offered_sampling_controls():
+    # Verified empirically against the real API (2026-07-13): gpt-5-mini
+    # rejects temperature outright with a 400 error.
+    assert _model_supports_sampling_controls("gpt-5-mini") is False
+    assert _model_supports_sampling_controls("gpt-5") is False
+    assert _model_supports_sampling_controls("gpt-5-nano") is False
+    assert _model_supports_sampling_controls("o3-mini") is False
+    assert _model_supports_sampling_controls("o1") is False
+    assert _model_supports_sampling_controls("o4-mini") is False
+
+
+def test_non_reasoning_models_are_offered_sampling_controls():
+    assert _model_supports_sampling_controls("gpt-4.1-mini") is True
+    assert _model_supports_sampling_controls("gpt-4o") is True
+
+
+def test_structured_response_omits_temperature_unless_given(monkeypatch):
+    from app.services import openai_client
+
+    captured = {}
+
+    class _RecordingResponses:
+        def parse(self, **kwargs):
+            captured.update(kwargs)
+            return SimpleNamespace(output_parsed="ok", usage=None)
+
+    class _RecordingClient:
+        responses = _RecordingResponses()
+
+    openai_client.structured_response(
+        instructions="x", prompt="y", schema=str, client=_RecordingClient(),
+    )
+    assert "temperature" not in captured
+
+    captured.clear()
+    openai_client.structured_response(
+        instructions="x", prompt="y", schema=str, client=_RecordingClient(), temperature=0.0,
+    )
+    assert captured["temperature"] == 0.0
+
+
+def test_planner_sends_temperature_zero_for_a_supporting_model(monkeypatch):
+    monkeypatch.setenv("VISUAL_ASSET_ECONOMY", "true")
+    monkeypatch.setenv("MODEL_PROFILE", "studio")
+    monkeypatch.setenv("OPENAI_TEXT_MODEL", "gpt-4.1-mini")  # not a reasoning model
+    project_state.start_project("proj-temp-supported")
+
+    scenes = _linear_scenes(3)
+    storyboard = _storyboard(scenes)
+    proposed = VisualAssetPlan(groups=[_group([1]), _group([2]), _group([3])])
+    stub = _PlannerResponsesStub(proposed)
+    monkeypatch.setattr(
+        "app.services.openai_client.get_openai_client", lambda: _PlannerFakeClient(stub)
+    )
+
+    plan_visual_assets(storyboard, target_seconds=9)
+
+    assert stub.calls
+    assert stub.calls[0].get("temperature") == 0.0
+
+
+def test_planner_omits_temperature_for_a_reasoning_model(monkeypatch):
+    monkeypatch.setenv("VISUAL_ASSET_ECONOMY", "true")
+    monkeypatch.setenv("MODEL_PROFILE", "studio")
+    monkeypatch.setenv("OPENAI_TEXT_MODEL", "gpt-5-mini")  # verified: rejects temperature
+    project_state.start_project("proj-temp-unsupported")
+
+    scenes = _linear_scenes(3)
+    storyboard = _storyboard(scenes)
+    proposed = VisualAssetPlan(groups=[_group([1]), _group([2]), _group([3])])
+    stub = _PlannerResponsesStub(proposed)
+    monkeypatch.setattr(
+        "app.services.openai_client.get_openai_client", lambda: _PlannerFakeClient(stub)
+    )
+
+    plan_visual_assets(storyboard, target_seconds=9)
+
+    assert stub.calls
+    assert "temperature" not in stub.calls[0]
+
+
+# ---------------------------------------------------------------------------
+# v3.2: deterministic plan cache
+# ---------------------------------------------------------------------------
+
+
+def test_cache_key_is_stable_for_identical_inputs():
+    scenes = _linear_scenes(4)
+    storyboard = _storyboard(scenes)
+    kwargs = dict(
+        storyboard=storyboard, production_specification=None, prompt_version=PROMPT_VERSION,
+        model="gpt-baseline", max_consecutive_reuse=3, min_grouping_confidence=0.75,
+    )
+    assert plan_cache.cache_key(**kwargs) == plan_cache.cache_key(**kwargs)
+
+
+def test_cache_key_changes_with_storyboard_content():
+    scenes_a = _linear_scenes(4)
+    scenes_b = _linear_scenes(4)
+    scenes_b[0].narration = "A completely different opening line changes the content."
+    kwargs = dict(
+        production_specification=None, prompt_version=PROMPT_VERSION,
+        model="gpt-baseline", max_consecutive_reuse=3, min_grouping_confidence=0.75,
+    )
+    key_a = plan_cache.cache_key(storyboard=_storyboard(scenes_a), **kwargs)
+    key_b = plan_cache.cache_key(storyboard=_storyboard(scenes_b), **kwargs)
+    assert key_a != key_b
+
+
+def test_cache_key_changes_with_model_and_grouping_config():
+    scenes = _linear_scenes(4)
+    storyboard = _storyboard(scenes)
+    base = dict(
+        storyboard=storyboard, production_specification=None, prompt_version=PROMPT_VERSION,
+        model="gpt-baseline", max_consecutive_reuse=3, min_grouping_confidence=0.75,
+    )
+    baseline_key = plan_cache.cache_key(**base)
+
+    assert plan_cache.cache_key(**{**base, "model": "gpt-other"}) != baseline_key
+    assert plan_cache.cache_key(**{**base, "max_consecutive_reuse": 4}) != baseline_key
+    assert plan_cache.cache_key(**{**base, "min_grouping_confidence": 0.9}) != baseline_key
+    assert plan_cache.cache_key(**{**base, "prompt_version": "9.9.9"}) != baseline_key
+
+
+def test_cache_get_put_round_trip(tmp_path, monkeypatch):
+    monkeypatch.setattr(plan_cache, "_cache_dir", lambda: tmp_path)
+    plan = VisualAssetPlan(groups=[_group([1]), _group([2, 3])])
+    assert plan_cache.get("some-key") is None
+
+    plan_cache.put("some-key", plan)
+    reloaded = plan_cache.get("some-key")
+    assert reloaded is not None
+    assert [g.scene_numbers for g in reloaded.groups] == [g.scene_numbers for g in plan.groups]
+
+
+def test_corrupted_cache_entry_is_treated_as_a_miss(tmp_path, monkeypatch):
+    monkeypatch.setattr(plan_cache, "_cache_dir", lambda: tmp_path)
+    (tmp_path / "broken-key.json").write_text("{not valid json", encoding="utf-8")
+    assert plan_cache.get("broken-key") is None
+
+
+def test_identical_input_reuses_cached_plan_without_another_model_call(monkeypatch):
+    monkeypatch.setenv("VISUAL_ASSET_ECONOMY", "true")
+    monkeypatch.setenv("MODEL_PROFILE", "studio")
+    monkeypatch.setenv("OPENAI_TEXT_MODEL", "gpt-baseline")
+    project_state.start_project("proj-cache-1")
+
+    scenes = _linear_scenes(5)
+    storyboard_first = _storyboard(scenes)
+    proposed = VisualAssetPlan(groups=[_group([1]), _group([2, 3]), _group([4]), _group([5])])
+    stub = _PlannerResponsesStub(proposed, input_tokens=1200, output_tokens=400)
+    monkeypatch.setattr(
+        "app.services.openai_client.get_openai_client", lambda: _PlannerFakeClient(stub)
+    )
+
+    plan_a, meta_a = plan_visual_assets(storyboard_first, target_seconds=15)
+    assert len(stub.calls) == 1
+    assert meta_a["planner_cache_hit"] is False
+    assert [2, 3] in [g.scene_numbers for g in plan_a.groups]
+
+    # A brand-new but *identical* storyboard object (same content, fresh
+    # instance -- proves the cache keys on content, not object identity).
+    project_state.reset()
+    project_state.start_project("proj-cache-2")
+    storyboard_second = _storyboard(_linear_scenes(5))
+
+    plan_b, meta_b = plan_visual_assets(storyboard_second, target_seconds=15)
+
+    assert len(stub.calls) == 1, "a second identical call must not invoke the model again"
+    assert meta_b["planner_cache_hit"] is True
+    assert meta_b["planner_input_tokens"] == 0
+    assert meta_b["planner_output_tokens"] == 0
+    assert [g.scene_numbers for g in plan_b.groups] == [g.scene_numbers for g in plan_a.groups]
+    assert [s.image_prompt for s in storyboard_second.scenes] == [s.image_prompt for s in storyboard_first.scenes]
+
+
+def test_different_input_does_not_reuse_the_cache(monkeypatch):
+    monkeypatch.setenv("VISUAL_ASSET_ECONOMY", "true")
+    monkeypatch.setenv("MODEL_PROFILE", "studio")
+    monkeypatch.setenv("OPENAI_TEXT_MODEL", "gpt-baseline")
+    project_state.start_project("proj-cache-diff-1")
+
+    proposed = VisualAssetPlan(groups=[_group([1]), _group([2]), _group([3]), _group([4]), _group([5])])
+    stub = _PlannerResponsesStub(proposed)
+    monkeypatch.setattr(
+        "app.services.openai_client.get_openai_client", lambda: _PlannerFakeClient(stub)
+    )
+
+    plan_visual_assets(_storyboard(_linear_scenes(5)), target_seconds=15)
+    assert len(stub.calls) == 1
+
+    project_state.reset()
+    project_state.start_project("proj-cache-diff-2")
+    different_scenes = _linear_scenes(5)
+    different_scenes[2].narration = "This scene now describes something entirely unrelated to the rest."
+    plan_visual_assets(_storyboard(different_scenes), target_seconds=15)
+
+    assert len(stub.calls) == 2, "different storyboard content must not hit the cache"
+
+
+def test_cache_hit_still_applies_shot_variation_and_group_ids(monkeypatch):
+    monkeypatch.setenv("VISUAL_ASSET_ECONOMY", "true")
+    monkeypatch.setenv("MODEL_PROFILE", "studio")
+    monkeypatch.setenv("OPENAI_TEXT_MODEL", "gpt-baseline")
+
+    scenes = _linear_scenes(4)
+    storyboard = _storyboard(scenes)
+    plan = VisualAssetPlan(groups=[_group([1]), _group([2, 3], justification="same subject"), _group([4])])
+
+    key = plan_cache.cache_key(
+        storyboard=storyboard, production_specification=None, prompt_version=PROMPT_VERSION,
+        model="gpt-baseline", max_consecutive_reuse=3, min_grouping_confidence=0.75,
+    )
+    plan_cache.put(key, plan)
+
+    _result_plan, meta = plan_visual_assets(storyboard, target_seconds=12)
+
+    assert meta["planner_cache_hit"] is True
+    assert storyboard.scenes[1].image_prompt == storyboard.scenes[2].image_prompt
+    assert storyboard.scenes[1].motion_type != storyboard.scenes[2].motion_type
+    assert storyboard.scenes[1].visual_asset_group_id == storyboard.scenes[2].visual_asset_group_id
