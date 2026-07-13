@@ -117,7 +117,6 @@ def _validate_coverage(plan: VisualAssetPlan, all_numbers: list[int]) -> bool:
 
 def _split_group(
     scene_numbers: list[int],
-    scenes_by_number: dict,
     *,
     hook_number: int,
     ending_number: int,
@@ -127,17 +126,31 @@ def _split_group(
 ) -> list[list[int]]:
     """Split one proposed group into the largest sub-runs that satisfy every
     hard constraint: the hook and ending scenes are always alone, no run
-    exceeds ``max_consecutive_reuse``, a run never crosses a location
-    change (the deterministic backstop for "unrelated scenes"/"chapter
-    transitions"), and a below-threshold confidence collapses the whole
-    group to singletons."""
+    exceeds ``max_consecutive_reuse``, a run never skips a scene number, and
+    a below-threshold confidence collapses the whole group to singletons --
+    the "unrelated scenes"/"chapter transition" guarantee (spec: "If reuse
+    reduces educational clarity: Generate a new image") deliberately lives
+    here, not in a location-string comparison.
+
+    An earlier version of this function also hard-split on
+    ``scene.location_id`` changing between consecutive scenes, on the
+    assumption that scenes sharing a Visual Asset Group would share that
+    label. Verified against real produced storyboards and reverted: the
+    storyboard-authoring stage assigns a distinct, highly specific
+    location_id to nearly every scene in practice (not the coarse
+    "primary"/"secondary" its own instructions ask for), so an exact-match
+    requirement rejected well-justified, high-confidence merges of scenes
+    that are genuinely the same visual moment. grouping_confidence -- which
+    the planner is explicitly instructed to lower whenever it is unsure --
+    is the real semantic safety net; MIN_GROUPING_CONFIDENCE is exactly the
+    knob the spec names for this.
+    """
 
     if confidence < min_confidence:
         return [[number] for number in scene_numbers]
 
     runs: list[list[int]] = []
     current: list[int] = []
-    prev_location: str | None = None
     prev_number: int | None = None
 
     def close_current() -> None:
@@ -147,20 +160,16 @@ def _split_group(
             current = []
 
     for number in scene_numbers:
-        scene = scenes_by_number[number]
         if number in (hook_number, ending_number):
             close_current()
             runs.append([number])
-            prev_location = scene.location_id
             prev_number = number
             continue
 
         non_adjacent = prev_number is not None and number != prev_number + 1
-        location_changed = prev_location is not None and scene.location_id != prev_location
-        if non_adjacent or location_changed or len(current) >= max_consecutive_reuse:
+        if non_adjacent or len(current) >= max_consecutive_reuse:
             close_current()
         current.append(number)
-        prev_location = scene.location_id
         prev_number = number
 
     close_current()
@@ -187,7 +196,6 @@ def _enforce_constraints(
         scene_numbers = sorted(group.scene_numbers)
         runs = _split_group(
             scene_numbers,
-            scenes_by_number,
             hook_number=hook_number,
             ending_number=ending_number,
             max_consecutive_reuse=max_consecutive_reuse,
