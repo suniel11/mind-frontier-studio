@@ -24,6 +24,17 @@ def _bounded_float(name: str, default: float, minimum: float, maximum: float) ->
         return default
 
 
+# Longer structured outputs such as a two-minute storyboard can legitimately
+# take more than the OpenAI SDK's short interactive-request timeout. Keep this
+# configurable for slower connections while retaining a finite upper bound.
+OPENAI_TIMEOUT_SECONDS = _bounded_float(
+    "OPENAI_TIMEOUT_SECONDS",
+    120.0,
+    15.0,
+    600.0,
+)
+
+
 PORT = _bounded_int("PORT", 8000, 1, 65535)
 
 MUSIC_ENABLED = os.getenv("MUSIC_ENABLED", "true").strip().lower() in {"1", "true", "yes", "on"}
