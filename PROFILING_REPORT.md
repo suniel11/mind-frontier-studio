@@ -1,5 +1,20 @@
 # Production pipeline profiling report
 
+> **Update after deploying the optimization below:** production hit
+> `openai.RateLimitError` ("Limit 5, Used 5") -- this account's real
+> `gpt-image-1` limit is **5 requests/minute**, far lower than assumed. The
+> synthetic before/after benchmark further down (247.19s -> 61.87s, 3.99x)
+> used a fake client with no rate limiting, so it does not reflect real
+> throughput on this account: 16 images at a hard 5/min cap take at least
+> ~180s no matter how much concurrency is applied. A rate limiter
+> (`app/services/rate_limiter.py`) and retry-with-backoff for transient
+> 429s were added on top of the parallelization (see the
+> "Fix rate-limit crash..." commit) to stop the crash; the realized
+> speedup on this account is now bounded by its rate-limit tier, not by
+> the 4x figure below. Accounts with a higher image-generation tier (raise
+> `OPENAI_IMAGE_RATE_LIMIT_PER_MINUTE`) will see closer to the original
+> measurement.
+
 Methodology: real per-stage timings from `studio_memory/logs/*.jsonl` /
 `projects/*/pipeline-report.json` telemetry for 4 actually-completed 2-minute
 (`target_seconds=120`, 16 scenes) documentary productions
