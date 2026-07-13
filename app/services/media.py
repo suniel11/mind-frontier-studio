@@ -1,12 +1,15 @@
 import base64
 import logging
+import os
 import re
 import shutil
 import subprocess
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import TYPE_CHECKING, Callable
 
+import openai
 from PIL import Image, ImageFont
 import imageio_ffmpeg
 
@@ -18,6 +21,7 @@ from app.config import (
 from app.services.cancellation import RenderCancelled
 from app.services.openai_client import get_openai_client
 from app.services.audio import master_audio
+from app.services.rate_limiter import SlidingWindowRateLimiter
 from app.services.subprocess_utils import run_cancellable
 from app.models import Storyboard, ShortScript
 from app.captions.engine import build_caption_document
@@ -43,10 +47,34 @@ TRANSITION_SECONDS = 0.32
 # showed it was, by far, the single largest bottleneck in the whole
 # pipeline (roughly a third of total production time for a typical 2-minute
 # documentary) purely because 16+ of these calls were made one at a time.
-# Bounded concurrency here keeps this well within typical account image-
-# generation rate limits while still cutting that wall-clock time
-# dramatically -- see PROFILING_REPORT.md.
+# Bounded concurrency here overlaps request latency; the rate limiter below
+# is what actually keeps requests within the account's real per-minute
+# image rate limit regardless of concurrency -- see PROFILING_REPORT.md.
 MAX_CONCURRENT_IMAGE_GENERATIONS = 4
+
+MAX_IMAGE_GENERATION_RETRIES = 3
+_RATE_LIMIT_RETRY_HINT = re.compile(r"try again in (\d+(?:\.\d+)?)s", re.IGNORECASE)
+
+
+def _image_rate_limit_per_minute() -> int:
+    try:
+        value = int(os.getenv("OPENAI_IMAGE_RATE_LIMIT_PER_MINUTE", "5"))
+    except (TypeError, ValueError):
+        value = 5
+    return max(1, value)
+
+
+# Shared across every concurrent worker so parallel scene-image generation
+# (MAX_CONCURRENT_IMAGE_GENERATIONS) can never dispatch more requests per
+# minute than the account actually allows -- concurrency alone caused a
+# real production failure (openai.RateLimitError, "Limit 5, Used 5" on
+# gpt-image-1) because bursting 4 requests at once blew straight past a
+# tight per-minute cap that sequential ~15s-apart calls happened to stay
+# under by luck, not by design. Conservative default of 5/min; raise
+# OPENAI_IMAGE_RATE_LIMIT_PER_MINUTE for accounts with a higher tier.
+_image_rate_limiter = SlidingWindowRateLimiter(
+    max_calls=_image_rate_limit_per_minute(), period_seconds=60.0
+)
 
 # Final render resolution and the closest OpenAI gpt-image-1 generation size
 # per aspect ratio. generate_scene_image() always crops/resizes to an exact
@@ -138,6 +166,54 @@ _ASPECT_RATIO_LABELS = {
 }
 
 
+def _is_quota_error(exc: openai.RateLimitError) -> bool:
+    return "quota" in str(exc).casefold()
+
+
+def _retry_delay_seconds(exc: openai.RateLimitError, attempt: int) -> float:
+    match = _RATE_LIMIT_RETRY_HINT.search(str(exc))
+    if match:
+        return float(match.group(1)) + 0.5
+    return min(20.0, 2.0 * (2**attempt))
+
+
+def _generate_image(
+    prompt: str,
+    size: str,
+    aspect_ratio: str,
+    *,
+    sleep: Callable[[float], None] = time.sleep,
+):
+    """Call images.generate(), rate-limited across every concurrent
+    worker and retried with backoff on a transient 429 rate-limit error --
+    but never retried on quota exhaustion (insufficient_quota), which
+    cannot succeed by waiting and retrying."""
+
+    full_prompt = (
+        prompt
+        + f"\n{_ASPECT_RATIO_LABELS.get(aspect_ratio, 'Portrait 9:16')} composition, "
+          "cinematic documentary style, "
+          "dark neutral palette, subtle warm highlights, realistic lighting, "
+          "consistent fictional character identity when a recurring protagonist appears, "
+          "no text, no logo, no watermark."
+    )
+    attempt = 0
+    while True:
+        _image_rate_limiter.acquire()
+        try:
+            return get_openai_client().images.generate(
+                model=OPENAI_IMAGE_MODEL,
+                prompt=full_prompt,
+                size=size,
+                quality="low",
+            )
+        except openai.RateLimitError as exc:
+            if _is_quota_error(exc) or attempt >= MAX_IMAGE_GENERATION_RETRIES:
+                raise
+            sleep(_retry_delay_seconds(exc, attempt))
+            attempt += 1
+
+
 def generate_scene_image(
     prompt: str,
     output_path: Path,
@@ -149,19 +225,7 @@ def generate_scene_image(
 ):
     if cancellation_check and cancellation_check():
         raise RenderCancelled("Rendering cancelled before scene image generation.")
-    result = get_openai_client().images.generate(
-        model=OPENAI_IMAGE_MODEL,
-        prompt=(
-            prompt
-            + f"\n{_ASPECT_RATIO_LABELS.get(aspect_ratio, 'Portrait 9:16')} composition, "
-              "cinematic documentary style, "
-              "dark neutral palette, subtle warm highlights, realistic lighting, "
-              "consistent fictional character identity when a recurring protagonist appears, "
-              "no text, no logo, no watermark."
-        ),
-        size=size,
-        quality="low",
-    )
+    result = _generate_image(prompt, size, aspect_ratio)
 
     image_data = result.data[0]
     if getattr(image_data, "b64_json", None):

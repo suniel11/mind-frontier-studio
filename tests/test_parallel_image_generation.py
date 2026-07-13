@@ -12,6 +12,7 @@ from PIL import Image
 from app.models import Scene, Storyboard, VisualMemory
 from app.services import media
 from app.services.cancellation import RenderCancelled
+from app.services.rate_limiter import SlidingWindowRateLimiter
 
 _buffer = io.BytesIO()
 Image.new("RGB", (32, 32), color=(50, 60, 70)).save(_buffer, format="PNG")
@@ -66,7 +67,15 @@ class _FakeClient:
 
 
 @pytest.fixture(autouse=True)
-def _restore_client(monkeypatch):
+def _permissive_rate_limit(monkeypatch):
+    # These tests assert on real elapsed wall-clock time to prove
+    # concurrency, so the shared production rate limiter (a handful of
+    # calls per real 60s minute) must not throttle them -- rate-limiting
+    # behavior itself is covered separately in
+    # test_image_generation_rate_limiting.py with an injectable clock.
+    monkeypatch.setattr(
+        media, "_image_rate_limiter", SlidingWindowRateLimiter(max_calls=10_000, period_seconds=60.0)
+    )
     yield
 
 
