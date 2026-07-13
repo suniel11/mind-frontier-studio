@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 from app.model_router.execution import run_agent_stage
 from app.model_router.quality_checks import visual_asset_plan_validator
 from app.model_router.stages import Stage
@@ -67,8 +69,6 @@ def _scene_payload(scene) -> dict:
 
 
 def _prompt_for(storyboard, *, target_seconds: int) -> str:
-    import json
-
     scenes_payload = [_scene_payload(scene) for scene in storyboard.scenes]
     return f"""
 Target duration: {target_seconds} seconds
