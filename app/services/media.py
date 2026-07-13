@@ -4,7 +4,7 @@ import re
 import shutil
 import subprocess
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Callable
 
 from PIL import Image, ImageFont
 import imageio_ffmpeg
@@ -14,8 +14,10 @@ from app.config import (
     OPENAI_TTS_MODEL,
     OPENAI_TTS_VOICE,
 )
+from app.services.cancellation import RenderCancelled
 from app.services.openai_client import get_openai_client
 from app.services.audio import master_audio
+from app.services.subprocess_utils import run_cancellable
 from app.models import Storyboard, ShortScript
 from app.captions.engine import build_caption_document
 from app.cinema.motion import compose_motion_filter
@@ -98,7 +100,10 @@ def generate_voiceover(
     output_path: Path,
     voice: str = OPENAI_TTS_VOICE,
     preferences: "UserCreativePreferences | None" = None,
+    cancellation_check: Callable[[], bool] | None = None,
 ):
+    if cancellation_check and cancellation_check():
+        raise RenderCancelled("Rendering cancelled before voiceover generation.")
     # Pause planning and pronunciation hints only ever touch this TTS-input
     # copy -- scene.narration (what captions read) is never modified.
     narration_text = apply_pronunciation_hints(plan_pauses(script.voiceover))
@@ -129,7 +134,10 @@ def generate_scene_image(
     height: int = HEIGHT,
     size: str = "1024x1536",
     aspect_ratio: str = "9:16",
+    cancellation_check: Callable[[], bool] | None = None,
 ):
+    if cancellation_check and cancellation_check():
+        raise RenderCancelled("Rendering cancelled before scene image generation.")
     result = get_openai_client().images.generate(
         model=OPENAI_IMAGE_MODEL,
         prompt=(
@@ -250,6 +258,7 @@ def _render_scene_clip(
     is_last: bool = False,
     width: int = WIDTH,
     height: int = HEIGHT,
+    cancellation_check: Callable[[], bool] | None = None,
 ):
     frames = max(1, round(duration * FPS))
     filter_graph = compose_motion_filter(
@@ -276,7 +285,7 @@ def _render_scene_clip(
         str(output_path),
     ]
 
-    completed = subprocess.run(command, capture_output=True, text=True)
+    completed = run_cancellable(command, cancellation_check=cancellation_check)
     if completed.returncode != 0:
         raise RuntimeError("FFmpeg scene rendering failed: " + completed.stderr[-1800:])
 
@@ -285,6 +294,7 @@ def _concat_scene_clips(
     ffmpeg: str,
     clips: list[Path],
     output_path: Path,
+    cancellation_check: Callable[[], bool] | None = None,
 ):
     concat_file = output_path.parent / "scene-clips.txt"
     lines = []
@@ -309,7 +319,7 @@ def _concat_scene_clips(
         "-an",
         str(output_path),
     ]
-    completed = subprocess.run(command, capture_output=True, text=True)
+    completed = run_cancellable(command, cancellation_check=cancellation_check)
     if completed.returncode != 0:
         raise RuntimeError("FFmpeg scene concatenation failed: " + completed.stderr[-1800:])
 
@@ -352,6 +362,7 @@ def _burn_captions(
     silent_video: Path,
     captions_file: Path,
     output_path: Path,
+    cancellation_check: Callable[[], bool] | None = None,
 ):
     caption_path = _subtitle_filter_path(captions_file)
     filter_value = f"subtitles='{caption_path}'"
@@ -367,7 +378,7 @@ def _burn_captions(
         "-an",
         str(output_path),
     ]
-    completed = subprocess.run(command, capture_output=True, text=True)
+    completed = run_cancellable(command, cancellation_check=cancellation_check)
     if completed.returncode != 0:
         raise RuntimeError("FFmpeg caption rendering failed: " + completed.stderr[-2000:])
 
@@ -377,6 +388,7 @@ def _mux_audio(
     captioned_video: Path,
     audio_path: Path,
     output_path: Path,
+    cancellation_check: Callable[[], bool] | None = None,
 ):
     command = [
         ffmpeg,
@@ -392,9 +404,26 @@ def _mux_audio(
         "-movflags", "+faststart",
         str(output_path),
     ]
-    completed = subprocess.run(command, capture_output=True, text=True)
+    completed = run_cancellable(command, cancellation_check=cancellation_check)
     if completed.returncode != 0:
         raise RuntimeError("FFmpeg audio muxing failed: " + completed.stderr[-1800:])
+
+
+def _cleanup_partial_render_artifacts(output_dir: Path, clips_dir: Path) -> None:
+    """Best-effort removal of whatever this render had already written when
+    it was cancelled, so a cancelled job never leaves partial/orphaned media
+    files behind (a retry or a fresh job for the same project regenerates
+    all of these from scratch anyway)."""
+
+    shutil.rmtree(clips_dir, ignore_errors=True)
+    for name in (
+        "silent-video.mp4",
+        "dynamic-captions.ass",
+        "captioned-video.mp4",
+        "mastered-audio.m4a",
+        "generated-ambient-bed.wav",
+    ):
+        (output_dir / name).unlink(missing_ok=True)
 
 
 def render_video(
@@ -408,56 +437,71 @@ def render_video(
     background_music: bool | None = None,
     aspect_ratio: str = "9:16",
     preferences: "UserCreativePreferences | None" = None,
+    cancellation_check: Callable[[], bool] | None = None,
 ):
     ffmpeg = imageio_ffmpeg.get_ffmpeg_exe()
     clips_dir = output_path.parent / "scene-clips"
     clips_dir.mkdir(exist_ok=True)
 
-    clips = []
-    total_scenes = len(storyboard.scenes)
-    for index, (scene, image_path) in enumerate(zip(storyboard.scenes, images)):
-        duration = max(1.0, scene.end_second - scene.start_second)
-        clip_path = clips_dir / f"scene-{scene.number:02d}.mp4"
-        _render_scene_clip(
-            ffmpeg=ffmpeg,
-            image_path=image_path,
-            output_path=clip_path,
-            scene=scene,
-            duration=duration,
-            is_first=index == 0,
-            is_last=index == total_scenes - 1,
-            width=width,
-            height=height,
+    try:
+        clips = []
+        total_scenes = len(storyboard.scenes)
+        for index, (scene, image_path) in enumerate(zip(storyboard.scenes, images)):
+            if cancellation_check and cancellation_check():
+                raise RenderCancelled("Rendering cancelled between scene clips.")
+            duration = max(1.0, scene.end_second - scene.start_second)
+            clip_path = clips_dir / f"scene-{scene.number:02d}.mp4"
+            _render_scene_clip(
+                ffmpeg=ffmpeg,
+                image_path=image_path,
+                output_path=clip_path,
+                scene=scene,
+                duration=duration,
+                is_first=index == 0,
+                is_last=index == total_scenes - 1,
+                width=width,
+                height=height,
+                cancellation_check=cancellation_check,
+            )
+            clips.append(clip_path)
+
+        silent_video = output_path.parent / "silent-video.mp4"
+        _concat_scene_clips(ffmpeg, clips, silent_video, cancellation_check=cancellation_check)
+
+        if subtitles:
+            captions_file = output_path.parent / "dynamic-captions.ass"
+            _write_dynamic_captions(
+                storyboard,
+                captions_file,
+                width=width,
+                height=height,
+                aspect_ratio=aspect_ratio,
+                preferences=preferences,
+            )
+            captioned_video = output_path.parent / "captioned-video.mp4"
+            _burn_captions(
+                ffmpeg, silent_video, captions_file, captioned_video,
+                cancellation_check=cancellation_check,
+            )
+        else:
+            captioned_video = silent_video
+
+        mastered_audio = output_path.parent / "mastered-audio.m4a"
+        master_audio(
+            narration_path=audio_path,
+            output_path=mastered_audio,
+            project_dir=output_path.parent,
+            music_enabled=background_music,
+            cancellation_check=cancellation_check,
         )
-        clips.append(clip_path)
 
-    silent_video = output_path.parent / "silent-video.mp4"
-    _concat_scene_clips(ffmpeg, clips, silent_video)
-
-    if subtitles:
-        captions_file = output_path.parent / "dynamic-captions.ass"
-        _write_dynamic_captions(
-            storyboard,
-            captions_file,
-            width=width,
-            height=height,
-            aspect_ratio=aspect_ratio,
-            preferences=preferences,
+        _mux_audio(
+            ffmpeg, captioned_video, mastered_audio, output_path,
+            cancellation_check=cancellation_check,
         )
-        captioned_video = output_path.parent / "captioned-video.mp4"
-        _burn_captions(ffmpeg, silent_video, captions_file, captioned_video)
-    else:
-        captioned_video = silent_video
-
-    mastered_audio = output_path.parent / "mastered-audio.m4a"
-    master_audio(
-        narration_path=audio_path,
-        output_path=mastered_audio,
-        project_dir=output_path.parent,
-        music_enabled=background_music,
-    )
-
-    _mux_audio(ffmpeg, captioned_video, mastered_audio, output_path)
+    except RenderCancelled:
+        _cleanup_partial_render_artifacts(output_path.parent, clips_dir)
+        raise
 
 
 def build_video(
@@ -467,6 +511,7 @@ def build_video(
     narration_audio_path: Path | None = None,
     preferences: "UserCreativePreferences | None" = None,
     aspect_ratio: str = "9:16",
+    cancellation_check: Callable[[], bool] | None = None,
 ) -> Path:
     graph = RenderGraph(project_dir)
     graph.mark("storyboard", "ready", detail=f"{len(storyboard.scenes)} scenes")
@@ -481,7 +526,9 @@ def build_video(
         # instead of generating a second, untimed narration here.
         shutil.copyfile(narration_audio_path, audio_path)
     else:
-        generate_voiceover(script, audio_path, preferences=preferences)
+        generate_voiceover(
+            script, audio_path, preferences=preferences, cancellation_check=cancellation_check
+        )
     graph.mark("voiceover", "complete", output=str(audio_path))
 
     resolved_aspect_ratio = getattr(getattr(preferences, "video", None), "aspect_ratio", None) or aspect_ratio
@@ -489,6 +536,8 @@ def build_video(
 
     images = []
     for scene in storyboard.scenes:
+        if cancellation_check and cancellation_check():
+            raise RenderCancelled("Rendering cancelled between scene images.")
         image_path = media_dir / f"scene-{scene.number:02d}.jpg"
         generate_scene_image(
             scene.image_prompt,
@@ -497,6 +546,7 @@ def build_video(
             height=height,
             size=image_size,
             aspect_ratio=resolved_aspect_ratio,
+            cancellation_check=cancellation_check,
         )
         images.append(image_path)
 
@@ -519,6 +569,7 @@ def build_video(
         background_music=background_music,
         aspect_ratio=resolved_aspect_ratio,
         preferences=preferences,
+        cancellation_check=cancellation_check,
     )
     graph.mark("render", "complete", output=str(video_path))
     return video_path

@@ -5,16 +5,23 @@ import struct
 import subprocess
 import wave
 from pathlib import Path
+from typing import Callable
 
 import imageio_ffmpeg
 
 from app.config import MUSIC_ENABLED, MUSIC_TRACK, MUSIC_VOLUME
+from app.services.subprocess_utils import run_cancellable
 
 SUPPORTED_MUSIC_EXTENSIONS = {".mp3", ".wav", ".m4a", ".aac", ".ogg", ".flac"}
 
 
-def _run(command: list[str], error_message: str) -> None:
-    completed = subprocess.run(command, capture_output=True, text=True)
+def _run(
+    command: list[str],
+    error_message: str,
+    *,
+    cancellation_check: Callable[[], bool] | None = None,
+) -> None:
+    completed = run_cancellable(command, cancellation_check=cancellation_check)
     if completed.returncode != 0:
         raise RuntimeError(f"{error_message}: {completed.stderr[-2200:]}")
 
@@ -118,6 +125,7 @@ def master_audio(
     output_path: Path,
     project_dir: Path,
     music_enabled: bool | None = None,
+    cancellation_check: Callable[[], bool] | None = None,
 ) -> Path:
     ffmpeg = imageio_ffmpeg.get_ffmpeg_exe()
     duration = _probe_duration(ffmpeg, narration_path)
@@ -136,7 +144,7 @@ def master_audio(
             "-b:a", "192k",
             str(output_path),
         ]
-        _run(command, "Narration mastering failed")
+        _run(command, "Narration mastering failed", cancellation_check=cancellation_check)
         return output_path
 
     music_path = _find_music_track(project_dir)
@@ -175,6 +183,6 @@ def master_audio(
         "-b:a", "192k",
         str(output_path),
     ]
-    _run(command, "Audio mixing and mastering failed")
+    _run(command, "Audio mixing and mastering failed", cancellation_check=cancellation_check)
     return output_path
 

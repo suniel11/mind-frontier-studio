@@ -235,7 +235,8 @@ def create_project_pipeline(
                 specification.target_seconds,
                 narration_audio_path,
                 synthesize=lambda s, path: generate_voiceover(
-                    s, path, voice=narrator_voice, preferences=specification.preferences
+                    s, path, voice=narrator_voice, preferences=specification.preferences,
+                    cancellation_check=cancellation_check,
                 ),
                 probe_duration=lambda path: probe_duration(ffmpeg_exe, path),
                 resize_script=script.resize,
@@ -260,6 +261,7 @@ def create_project_pipeline(
                 narration_audio_path=narration_audio_path,
                 preferences=specification.preferences,
                 aspect_ratio=specification.aspect_ratio,
+                cancellation_check=cancellation_check,
             )
             output.video_url = f"/projects/{project_id}/{video_path.name}"
 
