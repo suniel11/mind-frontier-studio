@@ -3,6 +3,7 @@ import logging
 import re
 import shutil
 import subprocess
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import TYPE_CHECKING, Callable
 
@@ -36,6 +37,16 @@ WIDTH = 1080
 HEIGHT = 1920
 FPS = 30
 TRANSITION_SECONDS = 0.32
+
+# Per-scene image generation is one independent OpenAI network call per
+# scene (its own prompt, its own output file, no shared state) -- profiling
+# showed it was, by far, the single largest bottleneck in the whole
+# pipeline (roughly a third of total production time for a typical 2-minute
+# documentary) purely because 16+ of these calls were made one at a time.
+# Bounded concurrency here keeps this well within typical account image-
+# generation rate limits while still cutting that wall-clock time
+# dramatically -- see PROFILING_REPORT.md.
+MAX_CONCURRENT_IMAGE_GENERATIONS = 4
 
 # Final render resolution and the closest OpenAI gpt-image-1 generation size
 # per aspect ratio. generate_scene_image() always crops/resizes to an exact
@@ -504,6 +515,67 @@ def render_video(
         raise
 
 
+def _generate_scene_images(
+    storyboard: Storyboard,
+    media_dir: Path,
+    *,
+    width: int,
+    height: int,
+    size: str,
+    aspect_ratio: str,
+    cancellation_check: Callable[[], bool] | None = None,
+) -> list[Path]:
+    """Generate every scene's image concurrently instead of one at a time.
+
+    Each call is an independent OpenAI network request writing to its own
+    file -- there is no shared state or ordering dependency between scenes
+    -- so this is safe to parallelize; output is identical to the old
+    sequential loop, just faster. Bounded to
+    ``MAX_CONCURRENT_IMAGE_GENERATIONS`` workers to stay well within
+    typical account rate limits. Results are always returned in scene
+    order, regardless of completion order, so callers (render_video) don't
+    need to change how they consume the result.
+
+    If cancellation is requested mid-batch, in-flight calls in that batch
+    are allowed to finish (there is no way to abort a network request
+    already sent) before the exception propagates -- this bounds the
+    uncancellable window to roughly one batch's latency instead of the
+    full sequential total.
+    """
+
+    if cancellation_check and cancellation_check():
+        raise RenderCancelled("Rendering cancelled before scene image generation.")
+
+    image_paths = [media_dir / f"scene-{scene.number:02d}.jpg" for scene in storyboard.scenes]
+    worker_count = max(1, min(MAX_CONCURRENT_IMAGE_GENERATIONS, len(storyboard.scenes)))
+
+    with ThreadPoolExecutor(max_workers=worker_count, thread_name_prefix="scene-image") as executor:
+        futures = {
+            executor.submit(
+                generate_scene_image,
+                scene.image_prompt,
+                image_paths[index],
+                width=width,
+                height=height,
+                size=size,
+                aspect_ratio=aspect_ratio,
+                cancellation_check=cancellation_check,
+            ): index
+            for index, scene in enumerate(storyboard.scenes)
+        }
+        first_error: BaseException | None = None
+        for future in as_completed(futures):
+            try:
+                future.result()
+            except BaseException as exc:  # noqa: BLE001 -- re-raised below, never swallowed
+                if first_error is None:
+                    first_error = exc
+        if first_error is not None:
+            raise first_error
+
+    return image_paths
+
+
 def build_video(
     project_dir: Path,
     script: ShortScript,
@@ -534,21 +606,15 @@ def build_video(
     resolved_aspect_ratio = getattr(getattr(preferences, "video", None), "aspect_ratio", None) or aspect_ratio
     width, height, image_size = resolution_for_aspect_ratio(resolved_aspect_ratio)
 
-    images = []
-    for scene in storyboard.scenes:
-        if cancellation_check and cancellation_check():
-            raise RenderCancelled("Rendering cancelled between scene images.")
-        image_path = media_dir / f"scene-{scene.number:02d}.jpg"
-        generate_scene_image(
-            scene.image_prompt,
-            image_path,
-            width=width,
-            height=height,
-            size=image_size,
-            aspect_ratio=resolved_aspect_ratio,
-            cancellation_check=cancellation_check,
-        )
-        images.append(image_path)
+    images = _generate_scene_images(
+        storyboard,
+        media_dir,
+        width=width,
+        height=height,
+        size=image_size,
+        aspect_ratio=resolved_aspect_ratio,
+        cancellation_check=cancellation_check,
+    )
 
     graph.mark("images", "complete", detail=f"{len(images)} images")
 
