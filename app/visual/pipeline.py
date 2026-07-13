@@ -8,9 +8,14 @@ from app.visual.shot_planner import plan_shots
 from app.visual.styles import load_style
 
 
-def apply_visual_storytelling(storyboard, project_root: Path, style_name: str = "documentary"):
+def apply_visual_storytelling(
+    storyboard,
+    project_root: Path,
+    style_name: str = "documentary",
+    production_specification=None,
+):
     style = load_style(project_root, style_name)
-    shots = plan_shots(storyboard)
+    shots = plan_shots(storyboard, production_specification)
     shot_map = {shot.scene_number: shot for shot in shots}
 
     for scene in storyboard.scenes:

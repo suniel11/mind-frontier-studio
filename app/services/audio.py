@@ -5,21 +5,28 @@ import struct
 import subprocess
 import wave
 from pathlib import Path
+from typing import Callable
 
 import imageio_ffmpeg
 
 from app.config import MUSIC_ENABLED, MUSIC_TRACK, MUSIC_VOLUME
+from app.services.subprocess_utils import run_cancellable
 
 SUPPORTED_MUSIC_EXTENSIONS = {".mp3", ".wav", ".m4a", ".aac", ".ogg", ".flac"}
 
 
-def _run(command: list[str], error_message: str) -> None:
-    completed = subprocess.run(command, capture_output=True, text=True)
+def _run(
+    command: list[str],
+    error_message: str,
+    *,
+    cancellation_check: Callable[[], bool] | None = None,
+) -> None:
+    completed = run_cancellable(command, cancellation_check=cancellation_check)
     if completed.returncode != 0:
         raise RuntimeError(f"{error_message}: {completed.stderr[-2200:]}")
 
 
-def _probe_duration(ffmpeg: str, audio_path: Path) -> float:
+def probe_duration(ffmpeg: str, audio_path: Path) -> float:
     completed = subprocess.run(
         [ffmpeg, "-i", str(audio_path)],
         capture_output=True,
@@ -34,6 +41,10 @@ def _probe_duration(ffmpeg: str, audio_path: Path) -> float:
 
     hours, minutes, seconds = match.groups()
     return int(hours) * 3600 + int(minutes) * 60 + float(seconds)
+
+
+# Back-compat alias for the previous private name.
+_probe_duration = probe_duration
 
 
 def _find_music_track(project_dir: Path) -> Path | None:
@@ -113,12 +124,17 @@ def master_audio(
     narration_path: Path,
     output_path: Path,
     project_dir: Path,
+    music_enabled: bool | None = None,
+    cancellation_check: Callable[[], bool] | None = None,
 ) -> Path:
     ffmpeg = imageio_ffmpeg.get_ffmpeg_exe()
     duration = _probe_duration(ffmpeg, narration_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
-    if not MUSIC_ENABLED:
+    # An explicit per-project preference overrides the global config default.
+    effective_music_enabled = MUSIC_ENABLED if music_enabled is None else music_enabled
+
+    if not effective_music_enabled:
         command = [
             ffmpeg,
             "-y",
@@ -128,7 +144,7 @@ def master_audio(
             "-b:a", "192k",
             str(output_path),
         ]
-        _run(command, "Narration mastering failed")
+        _run(command, "Narration mastering failed", cancellation_check=cancellation_check)
         return output_path
 
     music_path = _find_music_track(project_dir)
@@ -167,6 +183,6 @@ def master_audio(
         "-b:a", "192k",
         str(output_path),
     ]
-    _run(command, "Audio mixing and mastering failed")
+    _run(command, "Audio mixing and mastering failed", cancellation_check=cancellation_check)
     return output_path
 

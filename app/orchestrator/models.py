@@ -4,8 +4,8 @@ from pydantic import BaseModel, Field
 
 
 class OrchestratorRequest(BaseModel):
-    topic: str = Field(min_length=3, max_length=300)
-    target_seconds: int = Field(default=45, ge=20, le=90)
+    topic: str = Field(min_length=3, max_length=12000)
+    target_seconds: int = Field(default=45, ge=20, le=180)
     hook_type: str = Field(default="direct contradiction", max_length=80)
     save_workspace: bool = True
 

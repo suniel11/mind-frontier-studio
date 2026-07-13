@@ -71,9 +71,50 @@ def _migration_2(db: sqlite3.Connection) -> None:
     )
 
 
+def _column_names(db: sqlite3.Connection, table: str) -> set[str]:
+    return {
+        str(row[1])
+        for row in db.execute(f"PRAGMA table_info({table})")
+    }
+
+
+def _migration_3(db: sqlite3.Connection) -> None:
+    """Extend the v21 job table with durable production progress state."""
+
+    columns = _column_names(db, "background_jobs")
+    additions = {
+        "project_id": "TEXT NOT NULL DEFAULT ''",
+        "current_stage": "TEXT NOT NULL DEFAULT 'queued'",
+        "completed_stages_json": "TEXT NOT NULL DEFAULT '[]'",
+        "total_stages": "INTEGER NOT NULL DEFAULT 0",
+        "warnings_json": "TEXT NOT NULL DEFAULT '[]'",
+        "cancel_requested": "INTEGER NOT NULL DEFAULT 0",
+        "retry_count": "INTEGER NOT NULL DEFAULT 0",
+    }
+    for name, declaration in additions.items():
+        if name not in columns:
+            db.execute(
+                f"ALTER TABLE background_jobs ADD COLUMN {name} {declaration}"
+            )
+
+    db.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_background_jobs_project
+        ON background_jobs(project_id, created_at DESC)
+        """
+    )
+    db.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_background_jobs_type_status
+        ON background_jobs(job_type, status, created_at)
+        """
+    )
+
+
 MIGRATIONS = [
     Migration(1, "background_jobs", _migration_1),
     Migration(2, "system_backups", _migration_2),
+    Migration(3, "persistent_production_jobs", _migration_3),
 ]
 
 

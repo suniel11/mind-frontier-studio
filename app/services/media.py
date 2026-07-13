@@ -1,8 +1,15 @@
 import base64
+import logging
+import os
 import re
+import shutil
 import subprocess
+import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
+from typing import TYPE_CHECKING, Callable
 
+import openai
 from PIL import Image, ImageFont
 import imageio_ffmpeg
 
@@ -11,17 +18,83 @@ from app.config import (
     OPENAI_TTS_MODEL,
     OPENAI_TTS_VOICE,
 )
-from app.services.openai_client import client
+from app.services.cancellation import RenderCancelled
+from app.services.openai_client import get_openai_client
 from app.services.audio import master_audio
+from app.services.rate_limiter import SlidingWindowRateLimiter
+from app.services.subprocess_utils import run_cancellable
 from app.models import Storyboard, ShortScript
-from app.director.captions import semantic_phrases
+from app.captions.engine import build_caption_document
 from app.cinema.motion import compose_motion_filter
+from app.narration import voice_selection as narration_voices
+from app.narration.instructions import build_narration_instructions
+from app.narration.pauses import plan_pauses
+from app.narration.pronunciation import apply_pronunciation_hints
 from app.rendering.graph import RenderGraph
+from app.visual_continuity.cache import ImageAssetCache, cache_key
+from app.visual_continuity.config import image_cache_enabled
+
+if TYPE_CHECKING:
+    from app.production.preferences import UserCreativePreferences
+
+logger = logging.getLogger(__name__)
 
 WIDTH = 1080
 HEIGHT = 1920
 FPS = 30
 TRANSITION_SECONDS = 0.32
+
+# Per-scene image generation is one independent OpenAI network call per
+# scene (its own prompt, its own output file, no shared state) -- profiling
+# showed it was, by far, the single largest bottleneck in the whole
+# pipeline (roughly a third of total production time for a typical 2-minute
+# documentary) purely because 16+ of these calls were made one at a time.
+# Bounded concurrency here overlaps request latency; the rate limiter below
+# is what actually keeps requests within the account's real per-minute
+# image rate limit regardless of concurrency -- see PROFILING_REPORT.md.
+MAX_CONCURRENT_IMAGE_GENERATIONS = 4
+
+MAX_IMAGE_GENERATION_RETRIES = 3
+_RATE_LIMIT_RETRY_HINT = re.compile(r"try again in (\d+(?:\.\d+)?)s", re.IGNORECASE)
+
+
+def _image_rate_limit_per_minute() -> int:
+    try:
+        value = int(os.getenv("OPENAI_IMAGE_RATE_LIMIT_PER_MINUTE", "5"))
+    except (TypeError, ValueError):
+        value = 5
+    return max(1, value)
+
+
+# Shared across every concurrent worker so parallel scene-image generation
+# (MAX_CONCURRENT_IMAGE_GENERATIONS) can never dispatch more requests per
+# minute than the account actually allows -- concurrency alone caused a
+# real production failure (openai.RateLimitError, "Limit 5, Used 5" on
+# gpt-image-1) because bursting 4 requests at once blew straight past a
+# tight per-minute cap that sequential ~15s-apart calls happened to stay
+# under by luck, not by design. Conservative default of 5/min; raise
+# OPENAI_IMAGE_RATE_LIMIT_PER_MINUTE for accounts with a higher tier.
+_image_rate_limiter = SlidingWindowRateLimiter(
+    max_calls=_image_rate_limit_per_minute(), period_seconds=60.0
+)
+
+# Final render resolution and the closest OpenAI gpt-image-1 generation size
+# per aspect ratio. generate_scene_image() always crops/resizes to an exact
+# (width, height) target regardless of what the API returns, so choosing the
+# closest supported generation size only affects upscaling quality, not
+# correctness. "9:16" reproduces the historical WIDTH/HEIGHT constants
+# exactly so existing behavior is unchanged unless a different ratio is
+# explicitly requested.
+_ASPECT_RATIO_RESOLUTIONS: dict[str, tuple[int, int, str]] = {
+    "9:16": (1080, 1920, "1024x1536"),
+    "16:9": (1920, 1080, "1536x1024"),
+    "1:1": (1080, 1080, "1024x1024"),
+    "4:5": (1080, 1350, "1024x1536"),
+}
+
+
+def resolution_for_aspect_ratio(aspect_ratio: str | None) -> tuple[int, int, str]:
+    return _ASPECT_RATIO_RESOLUTIONS.get(aspect_ratio or "9:16", _ASPECT_RATIO_RESOLUTIONS["9:16"])
 
 
 def _font(size: int):
@@ -36,33 +109,125 @@ def _font(size: int):
     return ImageFont.load_default()
 
 
-def generate_voiceover(script: ShortScript, output_path: Path):
-    response = client.audio.speech.create(
+# Voice pools/selection now live in app.narration.voice_selection (Narration
+# Engine v2); re-exported here so existing call sites/tests that import them
+# from app.services.media keep working unchanged.
+MALE_VOICES = narration_voices.MALE_VOICES
+FEMALE_VOICES = narration_voices.FEMALE_VOICES
+gender_for_voice = narration_voices.gender_for_voice
+
+
+def voice_for_character(
+    character_bible,
+    preferences: "UserCreativePreferences | None" = None,
+    default_voice: str = OPENAI_TTS_VOICE,
+) -> str:
+    """Pick a narrator voice, honoring an explicit user request first.
+
+    Thin backward-compatible wrapper over
+    app.narration.voice_selection.select_voice, which also logs the
+    selection and records any accent-guarantee warning. Priority: an
+    explicit ``preferences.narrator.gender`` (the user's own words) always
+    wins, even when no Character Bible exists (a video can have a female
+    narrator with no on-screen presenter). Only when the user did not
+    specify a gender does the Character Bible's gender apply.
+    """
+
+    return narration_voices.select_voice(character_bible, preferences, default_voice).voice
+
+
+def generate_voiceover(
+    script: ShortScript,
+    output_path: Path,
+    voice: str = OPENAI_TTS_VOICE,
+    preferences: "UserCreativePreferences | None" = None,
+    cancellation_check: Callable[[], bool] | None = None,
+):
+    if cancellation_check and cancellation_check():
+        raise RenderCancelled("Rendering cancelled before voiceover generation.")
+    # Pause planning and pronunciation hints only ever touch this TTS-input
+    # copy -- scene.narration (what captions read) is never modified.
+    narration_text = apply_pronunciation_hints(plan_pauses(script.voiceover))
+    speed = narration_voices.effective_speed(preferences)
+    kwargs = {"speed": speed} if speed is not None else {}
+    response = get_openai_client().audio.speech.create(
         model=OPENAI_TTS_MODEL,
-        voice=OPENAI_TTS_VOICE,
-        input=script.voiceover,
-        instructions=(
-            "Calm, thoughtful documentary narration. "
-            "Moderate pace, precise diction, restrained emotion. "
-            "Use subtle pauses after important ideas."
-        ),
+        voice=voice,
+        input=narration_text,
+        instructions=build_narration_instructions(preferences),
+        **kwargs,
     )
     output_path.write_bytes(response.read())
 
 
-def generate_scene_image(prompt: str, output_path: Path):
-    result = client.images.generate(
-        model=OPENAI_IMAGE_MODEL,
-        prompt=(
-            prompt
-            + "\nPortrait 9:16 composition, cinematic documentary style, "
-              "dark neutral palette, subtle warm highlights, realistic lighting, "
-              "consistent fictional character identity when a recurring protagonist appears, "
-              "no text, no logo, no watermark."
-        ),
-        size="1024x1536",
-        quality="low",
+_ASPECT_RATIO_LABELS = {
+    "9:16": "Portrait 9:16",
+    "16:9": "Landscape 16:9",
+    "1:1": "Square 1:1",
+    "4:5": "Portrait 4:5",
+}
+
+
+def _is_quota_error(exc: openai.RateLimitError) -> bool:
+    return "quota" in str(exc).casefold()
+
+
+def _retry_delay_seconds(exc: openai.RateLimitError, attempt: int) -> float:
+    match = _RATE_LIMIT_RETRY_HINT.search(str(exc))
+    if match:
+        return float(match.group(1)) + 0.5
+    return min(20.0, 2.0 * (2**attempt))
+
+
+def _generate_image(
+    prompt: str,
+    size: str,
+    aspect_ratio: str,
+    *,
+    sleep: Callable[[float], None] = time.sleep,
+):
+    """Call images.generate(), rate-limited across every concurrent
+    worker and retried with backoff on a transient 429 rate-limit error --
+    but never retried on quota exhaustion (insufficient_quota), which
+    cannot succeed by waiting and retrying."""
+
+    full_prompt = (
+        prompt
+        + f"\n{_ASPECT_RATIO_LABELS.get(aspect_ratio, 'Portrait 9:16')} composition, "
+          "cinematic documentary style, "
+          "dark neutral palette, subtle warm highlights, realistic lighting, "
+          "consistent fictional character identity when a recurring protagonist appears, "
+          "no text, no logo, no watermark."
     )
+    attempt = 0
+    while True:
+        _image_rate_limiter.acquire()
+        try:
+            return get_openai_client().images.generate(
+                model=OPENAI_IMAGE_MODEL,
+                prompt=full_prompt,
+                size=size,
+                quality="low",
+            )
+        except openai.RateLimitError as exc:
+            if _is_quota_error(exc) or attempt >= MAX_IMAGE_GENERATION_RETRIES:
+                raise
+            sleep(_retry_delay_seconds(exc, attempt))
+            attempt += 1
+
+
+def generate_scene_image(
+    prompt: str,
+    output_path: Path,
+    width: int = WIDTH,
+    height: int = HEIGHT,
+    size: str = "1024x1536",
+    aspect_ratio: str = "9:16",
+    cancellation_check: Callable[[], bool] | None = None,
+):
+    if cancellation_check and cancellation_check():
+        raise RenderCancelled("Rendering cancelled before scene image generation.")
+    result = _generate_image(prompt, size, aspect_ratio)
 
     image_data = result.data[0]
     if getattr(image_data, "b64_json", None):
@@ -74,14 +239,14 @@ def generate_scene_image(prompt: str, output_path: Path):
     temp.write_bytes(raw)
 
     with Image.open(temp).convert("RGB") as image:
-        ratio = max(WIDTH / image.width, HEIGHT / image.height)
+        ratio = max(width / image.width, height / image.height)
         resized = image.resize(
             (int(image.width * ratio), int(image.height * ratio)),
             Image.Resampling.LANCZOS,
         )
-        left = (resized.width - WIDTH) // 2
-        top = (resized.height - HEIGHT) // 2
-        final = resized.crop((left, top, left + WIDTH, top + HEIGHT))
+        left = (resized.width - width) // 2
+        top = (resized.height - height) // 2
+        final = resized.crop((left, top, left + width, top + height))
         final.save(output_path, quality=92)
 
     temp.unlink(missing_ok=True)
@@ -168,14 +333,17 @@ def _render_scene_clip(
     duration: float,
     is_first: bool = False,
     is_last: bool = False,
+    width: int = WIDTH,
+    height: int = HEIGHT,
+    cancellation_check: Callable[[], bool] | None = None,
 ):
     frames = max(1, round(duration * FPS))
     filter_graph = compose_motion_filter(
         scene=scene,
         frames=frames,
         fps=FPS,
-        width=WIDTH,
-        height=HEIGHT,
+        width=width,
+        height=height,
     )
 
     command = [
@@ -194,7 +362,7 @@ def _render_scene_clip(
         str(output_path),
     ]
 
-    completed = subprocess.run(command, capture_output=True, text=True)
+    completed = run_cancellable(command, cancellation_check=cancellation_check)
     if completed.returncode != 0:
         raise RuntimeError("FFmpeg scene rendering failed: " + completed.stderr[-1800:])
 
@@ -203,6 +371,7 @@ def _concat_scene_clips(
     ffmpeg: str,
     clips: list[Path],
     output_path: Path,
+    cancellation_check: Callable[[], bool] | None = None,
 ):
     concat_file = output_path.parent / "scene-clips.txt"
     lines = []
@@ -227,135 +396,35 @@ def _concat_scene_clips(
         "-an",
         str(output_path),
     ]
-    completed = subprocess.run(command, capture_output=True, text=True)
+    completed = run_cancellable(command, cancellation_check=cancellation_check)
     if completed.returncode != 0:
         raise RuntimeError("FFmpeg scene concatenation failed: " + completed.stderr[-1800:])
 
 
-def _ass_time(seconds: float) -> str:
-    seconds = max(0.0, seconds)
-    hours = int(seconds // 3600)
-    minutes = int((seconds % 3600) // 60)
-    remaining = seconds % 60
-    return f"{hours}:{minutes:02d}:{remaining:05.2f}"
+def _write_dynamic_captions(
+    storyboard: Storyboard,
+    output_path: Path,
+    width: int = WIDTH,
+    height: int = HEIGHT,
+    aspect_ratio: str = "9:16",
+    preferences: "UserCreativePreferences | None" = None,
+):
+    """Caption Engine v2: safe-area-aware, naturally line-broken, themed,
+    highlighted, positioned, and animated -- see app/captions/engine.py for
+    the actual generation logic. This stays a thin call site so the render
+    pipeline's call graph is unchanged."""
 
-
-def _clean_words(text: str) -> list[str]:
-    return re.findall(r"[A-Za-z0-9’'-]+[.,!?;:]?", text)
-
-
-def _split_into_phrases(text: str, target_words: int = 4) -> list[str]:
-    words = _clean_words(text)
-    if not words:
-        return []
-
-    phrases = []
-    current = []
-    for word in words:
-        current.append(word)
-        punctuation_break = word.endswith((".", ",", "!", "?", ";", ":"))
-        if len(current) >= target_words or punctuation_break:
-            phrases.append(" ".join(current))
-            current = []
-
-    if current:
-        phrases.append(" ".join(current))
-    return phrases
-
-
-def _escape_ass_text(text: str) -> str:
-    return (
-        text.replace("\\", r"\\")
-        .replace("{", r"\{")
-        .replace("}", r"\}")
-        .replace("\n", r"\N")
+    captions = getattr(preferences, "captions", None)
+    document = build_caption_document(
+        storyboard,
+        width,
+        height,
+        aspect_ratio=aspect_ratio,
+        theme_name=getattr(captions, "theme", None),
+        animation_style=getattr(captions, "animation", None),
+        position_override=getattr(captions, "position", None),
     )
-
-
-def _highlight_phrase(phrase: str) -> str:
-    words = phrase.split()
-    candidates = [
-        (index, re.sub(r"[^A-Za-z0-9’'-]", "", word))
-        for index, word in enumerate(words)
-    ]
-    candidates = [(index, word) for index, word in candidates if len(word) >= 5]
-
-    if not candidates:
-        return _escape_ass_text(phrase.upper())
-
-    highlight_index, _ = max(candidates, key=lambda item: len(item[1]))
-    rendered = []
-
-    for index, word in enumerate(words):
-        escaped = _escape_ass_text(word.upper())
-        if index == highlight_index:
-            rendered.append(r"{\c&H62B8E8&\b1}" + escaped + r"{\c&HFFFFFF&\b1}")
-        else:
-            rendered.append(escaped)
-
-    return " ".join(rendered)
-
-
-def _write_dynamic_captions(storyboard: Storyboard, output_path: Path):
-    header = r"""[Script Info]
-ScriptType: v4.00+
-PlayResX: 1080
-PlayResY: 1920
-WrapStyle: 2
-ScaledBorderAndShadow: yes
-
-[V4+ Styles]
-Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-Style: Dynamic,Arial,72,&H00FFFFFF,&H00FFFFFF,&H00101010,&H96000000,-1,0,0,0,100,100,0,0,3,3,0,2,100,100,330,1
-Style: DynamicTop,Arial,72,&H00FFFFFF,&H00FFFFFF,&H00101010,&H96000000,-1,0,0,0,100,100,0,0,3,3,0,8,100,100,280,1
-Style: Hook,Arial,84,&H00FFFFFF,&H00FFFFFF,&H00101010,&HA0000000,-1,0,0,0,100,100,0,0,3,4,0,2,90,90,300,1
-Style: HookTop,Arial,84,&H00FFFFFF,&H00FFFFFF,&H00101010,&HA0000000,-1,0,0,0,100,100,0,0,3,4,0,8,90,90,250,1
-
-[Events]
-Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
-"""
-
-    events = []
-
-    for scene in storyboard.scenes:
-        phrases = semantic_phrases(scene.narration, max_words=5)
-        if not phrases:
-            phrases = [scene.on_screen_text]
-
-        scene_start = float(scene.start_second)
-        scene_end = float(scene.end_second)
-        scene_duration = max(0.5, scene_end - scene_start)
-
-        weights = [max(1, len(_clean_words(phrase))) for phrase in phrases]
-        total_weight = sum(weights)
-        cursor = scene_start
-
-        for index, (phrase, weight) in enumerate(zip(phrases, weights)):
-            duration = scene_duration * weight / total_weight
-            start = cursor
-            end = scene_end if index == len(phrases) - 1 else cursor + duration
-            cursor = end
-
-            is_hook = scene.number == 1 and index == 0
-            safe_area = str(getattr(scene, "caption_safe_area", "lower_third"))
-            use_top = safe_area == "upper_third"
-            if is_hook:
-                style = "HookTop" if use_top else "Hook"
-            else:
-                style = "DynamicTop" if use_top else "Dynamic"
-            animation = (
-                r"{\fad(70,90)\fscx82\fscy82\t(0,150,\fscx100\fscy100)\bord4\shad0}"
-                if is_hook
-                else r"{\fad(80,80)\fscx90\fscy90\t(0,130,\fscx100\fscy100)\bord3\shad0}"
-            )
-            text = animation + _highlight_phrase(phrase)
-
-            events.append(
-                f"Dialogue: 0,{_ass_time(start)},{_ass_time(end)},"
-                f"{style},,0,0,0,,{text}"
-            )
-
-    output_path.write_text(header + "\n".join(events), encoding="utf-8-sig")
+    output_path.write_text(document, encoding="utf-8-sig")
 
 
 def _subtitle_filter_path(path: Path) -> str:
@@ -370,6 +439,7 @@ def _burn_captions(
     silent_video: Path,
     captions_file: Path,
     output_path: Path,
+    cancellation_check: Callable[[], bool] | None = None,
 ):
     caption_path = _subtitle_filter_path(captions_file)
     filter_value = f"subtitles='{caption_path}'"
@@ -385,7 +455,7 @@ def _burn_captions(
         "-an",
         str(output_path),
     ]
-    completed = subprocess.run(command, capture_output=True, text=True)
+    completed = run_cancellable(command, cancellation_check=cancellation_check)
     if completed.returncode != 0:
         raise RuntimeError("FFmpeg caption rendering failed: " + completed.stderr[-2000:])
 
@@ -395,6 +465,7 @@ def _mux_audio(
     captioned_video: Path,
     audio_path: Path,
     output_path: Path,
+    cancellation_check: Callable[[], bool] | None = None,
 ):
     command = [
         ffmpeg,
@@ -410,9 +481,26 @@ def _mux_audio(
         "-movflags", "+faststart",
         str(output_path),
     ]
-    completed = subprocess.run(command, capture_output=True, text=True)
+    completed = run_cancellable(command, cancellation_check=cancellation_check)
     if completed.returncode != 0:
         raise RuntimeError("FFmpeg audio muxing failed: " + completed.stderr[-1800:])
+
+
+def _cleanup_partial_render_artifacts(output_dir: Path, clips_dir: Path) -> None:
+    """Best-effort removal of whatever this render had already written when
+    it was cancelled, so a cancelled job never leaves partial/orphaned media
+    files behind (a retry or a fresh job for the same project regenerates
+    all of these from scratch anyway)."""
+
+    shutil.rmtree(clips_dir, ignore_errors=True)
+    for name in (
+        "silent-video.mp4",
+        "dynamic-captions.ass",
+        "captioned-video.mp4",
+        "mastered-audio.m4a",
+        "generated-ambient-bed.wav",
+    ):
+        (output_dir / name).unlink(missing_ok=True)
 
 
 def render_video(
@@ -420,47 +508,178 @@ def render_video(
     images: list[Path],
     audio_path: Path,
     output_path: Path,
+    width: int = WIDTH,
+    height: int = HEIGHT,
+    subtitles: bool = True,
+    background_music: bool | None = None,
+    aspect_ratio: str = "9:16",
+    preferences: "UserCreativePreferences | None" = None,
+    cancellation_check: Callable[[], bool] | None = None,
 ):
     ffmpeg = imageio_ffmpeg.get_ffmpeg_exe()
     clips_dir = output_path.parent / "scene-clips"
     clips_dir.mkdir(exist_ok=True)
 
-    clips = []
-    total_scenes = len(storyboard.scenes)
-    for index, (scene, image_path) in enumerate(zip(storyboard.scenes, images)):
-        duration = max(1.0, scene.end_second - scene.start_second)
-        clip_path = clips_dir / f"scene-{scene.number:02d}.mp4"
-        _render_scene_clip(
-            ffmpeg=ffmpeg,
-            image_path=image_path,
-            output_path=clip_path,
-            scene=scene,
-            duration=duration,
-            is_first=index == 0,
-            is_last=index == total_scenes - 1,
+    try:
+        clips = []
+        total_scenes = len(storyboard.scenes)
+        for index, (scene, image_path) in enumerate(zip(storyboard.scenes, images)):
+            if cancellation_check and cancellation_check():
+                raise RenderCancelled("Rendering cancelled between scene clips.")
+            duration = max(1.0, scene.end_second - scene.start_second)
+            clip_path = clips_dir / f"scene-{scene.number:02d}.mp4"
+            _render_scene_clip(
+                ffmpeg=ffmpeg,
+                image_path=image_path,
+                output_path=clip_path,
+                scene=scene,
+                duration=duration,
+                is_first=index == 0,
+                is_last=index == total_scenes - 1,
+                width=width,
+                height=height,
+                cancellation_check=cancellation_check,
+            )
+            clips.append(clip_path)
+
+        silent_video = output_path.parent / "silent-video.mp4"
+        _concat_scene_clips(ffmpeg, clips, silent_video, cancellation_check=cancellation_check)
+
+        if subtitles:
+            captions_file = output_path.parent / "dynamic-captions.ass"
+            _write_dynamic_captions(
+                storyboard,
+                captions_file,
+                width=width,
+                height=height,
+                aspect_ratio=aspect_ratio,
+                preferences=preferences,
+            )
+            captioned_video = output_path.parent / "captioned-video.mp4"
+            _burn_captions(
+                ffmpeg, silent_video, captions_file, captioned_video,
+                cancellation_check=cancellation_check,
+            )
+        else:
+            captioned_video = silent_video
+
+        mastered_audio = output_path.parent / "mastered-audio.m4a"
+        master_audio(
+            narration_path=audio_path,
+            output_path=mastered_audio,
+            project_dir=output_path.parent,
+            music_enabled=background_music,
+            cancellation_check=cancellation_check,
         )
-        clips.append(clip_path)
 
-    silent_video = output_path.parent / "silent-video.mp4"
-    _concat_scene_clips(ffmpeg, clips, silent_video)
-
-    captions_file = output_path.parent / "dynamic-captions.ass"
-    _write_dynamic_captions(storyboard, captions_file)
-
-    captioned_video = output_path.parent / "captioned-video.mp4"
-    _burn_captions(ffmpeg, silent_video, captions_file, captioned_video)
-
-    mastered_audio = output_path.parent / "mastered-audio.m4a"
-    master_audio(
-        narration_path=audio_path,
-        output_path=mastered_audio,
-        project_dir=output_path.parent,
-    )
-
-    _mux_audio(ffmpeg, captioned_video, mastered_audio, output_path)
+        _mux_audio(
+            ffmpeg, captioned_video, mastered_audio, output_path,
+            cancellation_check=cancellation_check,
+        )
+    except RenderCancelled:
+        _cleanup_partial_render_artifacts(output_path.parent, clips_dir)
+        raise
 
 
-def build_video(project_dir: Path, script: ShortScript, storyboard: Storyboard) -> Path:
+def _generate_scene_images(
+    storyboard: Storyboard,
+    media_dir: Path,
+    *,
+    width: int,
+    height: int,
+    size: str,
+    aspect_ratio: str,
+    cancellation_check: Callable[[], bool] | None = None,
+) -> list[Path]:
+    """Generate one image per unique scene.image_prompt, concurrently, and
+    copy the result to every other scene that shares that prompt.
+
+    Visual Asset Economy v3 (app.visual_continuity) may have already
+    resolved several scenes to the exact same image_prompt (a shared
+    Anchor Shot) before this runs -- when it has, this only makes one real
+    OpenAI request for the whole group and locally copies the bytes for
+    the rest, which is where the actual API-call and render-time savings
+    come from. When every scene has its own unique prompt (the feature
+    disabled, or a plan that never merged anything), this behaves exactly
+    like the old one-request-per-scene loop. Set IMAGE_CACHE_ENABLED=false
+    to force a fresh request per scene even for identical prompts.
+
+    Each real generation call is an independent OpenAI network request
+    writing to its own file -- there is no shared state or ordering
+    dependency between them -- so this is safe to parallelize; bounded to
+    ``MAX_CONCURRENT_IMAGE_GENERATIONS`` workers to stay well within
+    typical account rate limits. Results are always returned in scene
+    order, regardless of completion order, so callers (render_video) don't
+    need to change how they consume the result.
+
+    If cancellation is requested mid-batch, in-flight calls in that batch
+    are allowed to finish (there is no way to abort a network request
+    already sent) before the exception propagates -- this bounds the
+    uncancellable window to roughly one batch's latency instead of the
+    full sequential total.
+    """
+
+    if cancellation_check and cancellation_check():
+        raise RenderCancelled("Rendering cancelled before scene image generation.")
+
+    image_paths = [media_dir / f"scene-{scene.number:02d}.jpg" for scene in storyboard.scenes]
+    cache_enabled = image_cache_enabled()
+    cache = ImageAssetCache()
+
+    scene_keys: list[str] = []
+    for index, scene in enumerate(storyboard.scenes):
+        key = (
+            cache_key(scene.image_prompt, aspect_ratio=aspect_ratio, quality="low")
+            if cache_enabled
+            else f"__uncached_scene_{index}"
+        )
+        scene_keys.append(key)
+        cache.put(key, index)
+
+    generation_indices = sorted({cache.get(key) for key in scene_keys})
+    worker_count = max(1, min(MAX_CONCURRENT_IMAGE_GENERATIONS, len(generation_indices)))
+
+    with ThreadPoolExecutor(max_workers=worker_count, thread_name_prefix="scene-image") as executor:
+        futures = {
+            executor.submit(
+                generate_scene_image,
+                storyboard.scenes[index].image_prompt,
+                image_paths[index],
+                width=width,
+                height=height,
+                size=size,
+                aspect_ratio=aspect_ratio,
+                cancellation_check=cancellation_check,
+            ): index
+            for index in generation_indices
+        }
+        first_error: BaseException | None = None
+        for future in as_completed(futures):
+            try:
+                future.result()
+            except BaseException as exc:  # noqa: BLE001 -- re-raised below, never swallowed
+                if first_error is None:
+                    first_error = exc
+        if first_error is not None:
+            raise first_error
+
+    for index, key in enumerate(scene_keys):
+        source_index = cache.get(key)
+        if source_index is not None and source_index != index:
+            shutil.copyfile(image_paths[source_index], image_paths[index])
+
+    return image_paths
+
+
+def build_video(
+    project_dir: Path,
+    script: ShortScript,
+    storyboard: Storyboard,
+    narration_audio_path: Path | None = None,
+    preferences: "UserCreativePreferences | None" = None,
+    aspect_ratio: str = "9:16",
+    cancellation_check: Callable[[], bool] | None = None,
+) -> Path:
     graph = RenderGraph(project_dir)
     graph.mark("storyboard", "ready", detail=f"{len(storyboard.scenes)} scenes")
 
@@ -468,19 +687,50 @@ def build_video(project_dir: Path, script: ShortScript, storyboard: Storyboard) 
     media_dir.mkdir(exist_ok=True)
 
     audio_path = media_dir / "voiceover.mp3"
-    generate_voiceover(script, audio_path)
+    if narration_audio_path is not None:
+        # Narration was already synthesized (and its measured duration used
+        # to time the scenes) by the voice_generation stage -- reuse it
+        # instead of generating a second, untimed narration here.
+        shutil.copyfile(narration_audio_path, audio_path)
+    else:
+        generate_voiceover(
+            script, audio_path, preferences=preferences, cancellation_check=cancellation_check
+        )
     graph.mark("voiceover", "complete", output=str(audio_path))
 
-    images = []
-    for scene in storyboard.scenes:
-        image_path = media_dir / f"scene-{scene.number:02d}.jpg"
-        generate_scene_image(scene.image_prompt, image_path)
-        images.append(image_path)
+    resolved_aspect_ratio = getattr(getattr(preferences, "video", None), "aspect_ratio", None) or aspect_ratio
+    width, height, image_size = resolution_for_aspect_ratio(resolved_aspect_ratio)
+
+    images = _generate_scene_images(
+        storyboard,
+        media_dir,
+        width=width,
+        height=height,
+        size=image_size,
+        aspect_ratio=resolved_aspect_ratio,
+        cancellation_check=cancellation_check,
+    )
 
     graph.mark("images", "complete", detail=f"{len(images)} images")
 
+    rendering = getattr(preferences, "rendering", None)
+    subtitles = True if rendering is None or rendering.subtitles is None else rendering.subtitles
+    background_music = None if rendering is None else rendering.background_music
+
     video_path = project_dir / "mind-frontier-short.mp4"
     graph.mark("render", "started")
-    render_video(storyboard, images, audio_path, video_path)
+    render_video(
+        storyboard,
+        images,
+        audio_path,
+        video_path,
+        width=width,
+        height=height,
+        subtitles=subtitles,
+        background_music=background_music,
+        aspect_ratio=resolved_aspect_ratio,
+        preferences=preferences,
+        cancellation_check=cancellation_check,
+    )
     graph.mark("render", "complete", output=str(video_path))
     return video_path

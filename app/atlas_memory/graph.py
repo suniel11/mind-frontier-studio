@@ -12,6 +12,8 @@ from app.atlas_memory.store import (
     upsert_entity,
     upsert_relation,
 )
+from app.youtube_sync.analytics_store import ensure_analytics_tables
+from app.youtube_sync.video_store import ensure_video_table
 
 
 def _now() -> str:
@@ -28,6 +30,8 @@ def _entity_id(entity_type: str, name: str) -> str:
 
 def rebuild_memory_graph(root: Path) -> dict[str, Any]:
     migrate(root)
+    ensure_video_table(root)
+    ensure_analytics_tables(root)
     ensure_memory_tables(root)
     started_at = _now()
 

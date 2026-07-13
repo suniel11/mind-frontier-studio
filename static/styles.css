@@ -1803,3 +1803,72 @@ video {
     grid-template-columns: 1fr;
   }
 }
+#director-chat {
+  height: 500px;
+  overflow: auto;
+  padding: 15px;
+  border-radius: 14px;
+  background: #111;
+  margin: 20px 0;
+}
+
+.director-message {
+  padding: 12px;
+  border-radius: 10px;
+  margin: 12px 0;
+  max-width: 80%;
+  line-height: 1.6;
+}
+
+.director-message.user {
+  margin-left: auto;
+  background: #444;
+}
+
+.director-message.assistant {
+  background: #222;
+}
+
+.director-options {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  margin: 15px 0;
+}
+
+.director-options button {
+  width: 100%;
+}
+
+.director-brief {
+  margin-top: 20px;
+  padding: 20px;
+  border-radius: 12px;
+  background: #191919;
+  white-space: pre-wrap;
+}
+
+#director-input {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: end;
+}
+
+#director-prompt {
+  min-height: 100px;
+  margin: 0;
+}
+
+#director-send,
+.director-production-button {
+  width: auto;
+  margin: 0;
+}
+
+@media (max-width: 700px) {
+  .director-options,
+  #director-input {
+    grid-template-columns: 1fr;
+  }
+}

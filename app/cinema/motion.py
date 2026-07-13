@@ -46,8 +46,15 @@ def compose_motion_filter(scene, frames: int, fps: int, width: int, height: int)
         x = "iw/2-(iw/zoom/2)+3*sin(on/39)"
         y = "ih/2-(ih/zoom/2)+2*cos(on/47)"
 
+    # Pre-upscale before zoompan needs headroom for the Ken Burns effect;
+    # 1240:2200 was tuned for the 1080x1920 default (a ~14.8%/14.6% margin
+    # per axis) -- scaled proportionally so other resolutions get the same
+    # headroom instead of a fixed pixel size meant for portrait video.
+    pre_width = round(width * 1240 / 1080)
+    pre_height = round(height * 2200 / 1920)
+
     return (
-        "scale=1240:2200,"
+        f"scale={pre_width}:{pre_height},"
         "zoompan="
         f"z='{zoom}':"
         f"x='{x}':"
