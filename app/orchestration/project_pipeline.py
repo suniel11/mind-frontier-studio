@@ -40,7 +40,7 @@ from app.services.media import build_video, gender_for_voice, generate_voiceover
 from app.services.project_store import make_project_id, save_project
 from app.visual.pipeline import apply_visual_storytelling
 from app.visual_continuity.planner import plan_visual_assets
-from app.visual_continuity.telemetry import save_visual_asset_report
+from app.visual_continuity.telemetry import save_visual_asset_report, save_visual_continuity_debug
 
 
 class PipelineCancelledError(RuntimeError):
@@ -195,10 +195,13 @@ def create_project_pipeline(
             # presented with a different camera treatment). Runs after
             # prompt_compilation so it sees every scene's final, compiled
             # image_prompt. Safe by construction -- disabled, a provider
-            # failure, or a structurally unusable plan all degrade to
+            # failure, a structurally unusable plan, or the Planner Cost
+            # Guard (grouping not worth its own cost) all degrade to
             # today's one-image-per-scene behavior (see
-            # app.visual_continuity.planner._identity_plan).
-            visual_asset_plan = plan_visual_assets(
+            # app.visual_continuity.planner._identity_plan). ``visual_asset_
+            # planner_meta`` carries the planner's own token/time/cost so
+            # the saved report can show net savings, not just image savings.
+            visual_asset_plan, visual_asset_planner_meta = plan_visual_assets(
                 storyboard_result,
                 target_seconds=specification.target_seconds,
             )
@@ -229,7 +232,8 @@ def create_project_pipeline(
             # resize during voice_generation) adds more calls.
             save_model_usage(project_dir, project_id)
             save_cinema_report(project_dir, cinema_report)
-            save_visual_asset_report(project_dir, visual_asset_plan, storyboard_result)
+            save_visual_asset_report(project_dir, visual_asset_plan, storyboard_result, visual_asset_planner_meta)
+            save_visual_continuity_debug(project_dir, visual_asset_planner_meta)
 
         with tracked_stage("voice_generation"):
             # Narration is synthesized here (not inside the renderer) so its

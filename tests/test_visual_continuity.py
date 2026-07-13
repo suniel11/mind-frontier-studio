@@ -14,6 +14,7 @@ from app.models import Scene, Storyboard, VisualMemory
 from app.services import media
 from app.services.cancellation import RenderCancelled
 from app.services.rate_limiter import SlidingWindowRateLimiter
+from app.visual_continuity import cost_guard
 from app.visual_continuity.cache import ImageAssetCache, cache_key
 from app.visual_continuity.models import VisualAssetGroup, VisualAssetPlan
 from app.visual_continuity.planner import (
@@ -22,9 +23,14 @@ from app.visual_continuity.planner import (
     _identity_plan,
     plan_visual_assets,
 )
+from app.visual_continuity.repetition import repetition_risk
 from app.visual_continuity.scoring import continuity_score
 from app.visual_continuity.shots import assign_shot_variations
-from app.visual_continuity.telemetry import build_visual_asset_report, save_visual_asset_report
+from app.visual_continuity.telemetry import (
+    build_visual_asset_report,
+    save_visual_asset_report,
+    save_visual_continuity_debug,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -74,12 +80,37 @@ def _memory(**overrides) -> VisualMemory:
     return VisualMemory(**base)
 
 
+# Genuinely distinct sentences (not a templated "Narration for scene N."
+# pattern) so the Visual Repetition Guard's narration-similarity check
+# doesn't misfire between unrelated fixture scenes just because they share
+# a common template -- only the tests that explicitly want to exercise
+# that guard construct near-duplicate narration on purpose.
+_NARRATION_POOL = [
+    "A submersible begins its descent into total darkness.",
+    "Pressure gauges climb steadily as depth increases dramatically.",
+    "Bioluminescent creatures drift past the viewport silently.",
+    "Sonar pings map contours of the unseen seafloor below.",
+    "Engineers monitor telemetry from the surface support vessel.",
+    "A hydrothermal vent glows faintly amid volcanic rock formations.",
+    "Sediment samples are collected using a robotic manipulator arm.",
+    "Communication delays complicate real time decision making.",
+    "The crew reviews footage of a newly discovered species.",
+    "Battery levels dictate how long the mission can continue.",
+    "A support ship relays coordinates to the research team.",
+    "Scientists debate the significance of the mineral deposits found.",
+    "The vessel ascends slowly to avoid decompression hazards.",
+    "Data logs are transferred for analysis back on shore.",
+    "A documentary crew captures the historic dive on camera.",
+    "The expedition concludes with a celebration among the crew.",
+]
+
+
 def _scene(number: int, *, location_id: str = "primary", story_role: str = "development", **overrides) -> Scene:
     base = dict(
         number=number,
         start_second=(number - 1) * 3,
         end_second=number * 3,
-        narration=f"Narration for scene {number}.",
+        narration=_NARRATION_POOL[(number - 1) % len(_NARRATION_POOL)],
         on_screen_text="",
         visual_direction=f"visual direction {number}",
         image_prompt=f"unique prompt for scene {number}",
@@ -384,6 +415,10 @@ def test_telemetry_report_contains_required_metrics(tmp_path):
         "scene_count", "generated_images", "reused_images", "visual_asset_groups",
         "average_scenes_per_asset", "continuity_score", "reuse_percentage",
         "estimated_image_api_calls_saved", "estimated_render_time_saved_seconds",
+        "planner_model", "planner_input_tokens", "planner_output_tokens", "planner_total_tokens",
+        "planner_execution_time", "planner_estimated_cost", "planner_enabled", "planner_disabled_reason",
+        "images_generated", "images_reused", "estimated_image_cost_saved", "estimated_render_time_saved",
+        "estimated_net_cost_saved", "estimated_net_time_saved", "groups", "reused_scenes",
     ):
         assert key in document
 
@@ -395,6 +430,59 @@ def test_telemetry_report_contains_required_metrics(tmp_path):
     assert path.name == "visual-asset-report.json"
     saved = json.loads(path.read_text(encoding="utf-8"))
     assert saved["generated_images"] == 3
+
+
+def test_net_savings_are_computed_from_planner_meta(tmp_path):
+    scenes = _linear_scenes(6)
+    storyboard = _storyboard(scenes)
+    plan = VisualAssetPlan(groups=[_group([1]), _group([2, 3, 4]), _group([5, 6])])
+    _apply_plan_to_scenes(plan, storyboard)
+
+    planner_meta = {
+        "planner_enabled": True,
+        "planner_disabled_reason": None,
+        "planner_model": "gpt-baseline",
+        "planner_input_tokens": 2000,
+        "planner_output_tokens": 500,
+        "planner_execution_time": 4.5,
+    }
+    document = build_visual_asset_report(plan, storyboard, planner_meta)
+
+    assert document["planner_model"] == "gpt-baseline"
+    assert document["planner_input_tokens"] == 2000
+    assert document["planner_output_tokens"] == 500
+    assert document["planner_total_tokens"] == 2500
+    assert document["planner_execution_time"] == 4.5
+    assert document["planner_estimated_cost"] > 0
+    # 3 reused images (6 scenes, 3 groups) at the default estimated price.
+    assert document["estimated_image_cost_saved"] > 0
+    assert document["estimated_net_cost_saved"] == round(
+        document["estimated_image_cost_saved"] - document["planner_estimated_cost"], 6
+    )
+    assert document["estimated_net_time_saved"] == round(
+        document["estimated_render_time_saved"] - 4.5, 2
+    )
+
+
+def test_grouping_explanations_are_present_and_specific(tmp_path):
+    scenes = _linear_scenes(5)
+    storyboard = _storyboard(scenes)
+    plan = VisualAssetPlan(groups=[_group([1]), _group([2, 3, 4], justification="same lab equipment shot"), _group([5])])
+    _apply_plan_to_scenes(plan, storyboard)
+
+    document = build_visual_asset_report(plan, storyboard)
+
+    group_entry = next(g for g in document["groups"] if g["group_id"] == "g02")
+    assert group_entry["member_scenes"] == [2, 3, 4]
+    assert group_entry["justification"] == "same lab equipment shot"
+    assert group_entry["semantic_category"]
+    assert "grouping_confidence" in group_entry
+
+    reused = {entry["scene"]: entry for entry in document["reused_scenes"]}
+    assert set(reused) == {3, 4}
+    assert reused[3]["reused_from_scene"] == 2
+    assert reused[3]["reason"] == "same lab equipment shot"
+    assert reused[3]["semantic_evidence"]
 
 
 # ---------------------------------------------------------------------------
@@ -568,10 +656,12 @@ def test_feature_disabled_produces_identity_plan_with_no_llm_call(monkeypatch):
     scenes = _linear_scenes(5)
     storyboard = _storyboard(scenes)
 
-    plan = plan_visual_assets(storyboard, target_seconds=15)
+    plan, meta = plan_visual_assets(storyboard, target_seconds=15)
 
     assert len(plan.groups) == 5
     assert all(len(g.scene_numbers) == 1 for g in plan.groups)
+    assert meta["planner_enabled"] is False
+    assert meta["planner_disabled_reason"] == "feature_disabled"
 
 
 def test_identity_plan_matches_original_prompts():
@@ -594,7 +684,245 @@ def test_provider_failure_during_planning_degrades_to_identity_plan(monkeypatch)
     scenes = _linear_scenes(4)
     storyboard = _storyboard(scenes)
 
-    plan = plan_visual_assets(storyboard, target_seconds=12)
+    plan, meta = plan_visual_assets(storyboard, target_seconds=12)
 
     assert len(plan.groups) == 4
     assert all(len(g.scene_numbers) == 1 for g in plan.groups)
+    assert meta["planner_enabled"] is True
+    assert meta["planner_disabled_reason"] == "provider_error"
+
+
+# ---------------------------------------------------------------------------
+# v3.1: Visual Repetition Guard
+# ---------------------------------------------------------------------------
+
+
+def test_repetition_guard_detects_near_duplicate_narration():
+    a = _scene(2, narration="The Mariana Trench is a living frontier, alien vital and fragile to study.")
+    b = _scene(3, narration="The Mariana Trench is a living frontier, alien, vital, fragile; to study it.")
+    risky, reason = repetition_risk(a, b)
+    assert risky is True
+    assert "narration" in reason
+
+
+def test_repetition_guard_detects_identical_framing():
+    a = _scene(2, shot_type="wide", visual_emotion="awe", caption_emphasis="pressure", subject_focus="submersible")
+    b = _scene(3, shot_type="wide", visual_emotion="awe", caption_emphasis="pressure", subject_focus="submersible")
+    risky, reason = repetition_risk(a, b)
+    assert risky is True
+    assert "framing" in reason
+
+
+def test_repetition_guard_allows_genuinely_different_scenes():
+    a = _scene(2, narration="The submersible begins its descent into darkness.",
+               shot_type="wide", visual_emotion="awe", caption_emphasis="descent", subject_focus="submersible")
+    b = _scene(3, narration="Pressure gauges climb as the hull creaks under the load.",
+               shot_type="close_up", visual_emotion="tension", caption_emphasis="pressure", subject_focus="gauges")
+    risky, reason = repetition_risk(a, b)
+    assert risky is False
+    assert reason == ""
+
+
+def test_repeated_framing_forces_new_image_generation():
+    scenes = _linear_scenes(5)
+    scenes[1].shot_type = scenes[2].shot_type = "wide"
+    scenes[1].visual_emotion = scenes[2].visual_emotion = "awe"
+    scenes[1].caption_emphasis = scenes[2].caption_emphasis = "same"
+    scenes[1].subject_focus = scenes[2].subject_focus = "same subject"
+    storyboard = _storyboard(scenes)
+    raw = VisualAssetPlan(groups=[_group([1]), _group([2, 3, 4]), _group([5])])
+
+    plan = _enforce_constraints(raw, storyboard, max_consecutive_reuse=4, min_confidence=0.75)
+
+    grouped_numbers = [g.scene_numbers for g in plan.groups]
+    assert [2, 3, 4] not in grouped_numbers
+    assert [2] in grouped_numbers  # scene 2 split off into its own fresh image
+
+
+def test_low_confidence_prevents_reuse_directly():
+    scenes = _linear_scenes(4)
+    storyboard = _storyboard(scenes)
+    raw = VisualAssetPlan(groups=[_group([1]), _group([2, 3], confidence=0.1), _group([4])])
+
+    plan = _enforce_constraints(raw, storyboard, max_consecutive_reuse=3, min_confidence=0.75)
+
+    assert [2, 3] not in [g.scene_numbers for g in plan.groups]
+
+
+# ---------------------------------------------------------------------------
+# v3.1: Planner Cost Guard
+# ---------------------------------------------------------------------------
+
+
+def test_cost_guard_disables_grouping_when_planner_cost_exceeds_savings(monkeypatch):
+    monkeypatch.setenv("VISUAL_CONTINUITY_TEXT_PRICE_PER_1M_INPUT_USD", "1000")
+    monkeypatch.setenv("VISUAL_CONTINUITY_TEXT_PRICE_PER_1M_OUTPUT_USD", "1000")
+    result = cost_guard.evaluate(planner_input_tokens=5000, planner_output_tokens=2000, reused_images=2)
+    assert result.should_disable_grouping is True
+    assert result.estimated_net_cost_saved_usd < 0
+
+
+def test_cost_guard_allows_grouping_when_savings_exceed_cost():
+    result = cost_guard.evaluate(planner_input_tokens=2000, planner_output_tokens=500, reused_images=10)
+    assert result.should_disable_grouping is False
+    assert result.estimated_net_cost_saved_usd > 0
+
+
+def test_cost_guard_never_flags_a_plan_with_zero_reuse():
+    # No reuse to disable in the first place -- this must not be reported
+    # as a guard "decision" (see planner.py's extra `> 0` check).
+    result = cost_guard.evaluate(planner_input_tokens=2000, planner_output_tokens=500, reused_images=0)
+    assert result.should_disable_grouping is True  # 0 savings vs any nonzero cost
+    assert result.estimated_image_cost_saved_usd == 0.0
+
+
+def test_cost_guard_disables_on_negative_net_time_even_when_dollar_positive():
+    # Verified against a real production: cheap in tokens (dollar-positive)
+    # but the planner call itself took long enough that estimated render-
+    # time savings from 2 reused images didn't cover it -- reducing render
+    # time was objective #1 of this whole feature, so time-negative must
+    # disable grouping even when cost-positive.
+    result = cost_guard.evaluate(
+        planner_input_tokens=100, planner_output_tokens=50, reused_images=2, planner_execution_time=120.0,
+    )
+    assert result.should_disable_for_cost is False  # cheap in dollars
+    assert result.should_disable_for_time is True  # but far too slow
+    assert result.should_disable_grouping is True
+
+
+def test_cost_guard_allows_when_both_cost_and_time_are_net_positive():
+    result = cost_guard.evaluate(
+        planner_input_tokens=1200, planner_output_tokens=400, reused_images=7, planner_execution_time=20.0,
+    )
+    assert result.should_disable_for_cost is False
+    assert result.should_disable_for_time is False
+    assert result.should_disable_grouping is False
+
+
+# ---------------------------------------------------------------------------
+# v3.1: End-to-end planner telemetry (real structured_response call path,
+# fake OpenAI client -- no network).
+# ---------------------------------------------------------------------------
+
+
+class _PlannerResponsesStub:
+    def __init__(self, parsed_plan, *, input_tokens=1000, output_tokens=300):
+        self._parsed = parsed_plan
+        self._input_tokens = input_tokens
+        self._output_tokens = output_tokens
+        self.calls: list[dict] = []
+
+    def parse(self, **kwargs):
+        self.calls.append(kwargs)
+        usage_obj = SimpleNamespace(
+            input_tokens=self._input_tokens,
+            output_tokens=self._output_tokens,
+            input_tokens_details=SimpleNamespace(cached_tokens=0),
+        )
+        return SimpleNamespace(output_parsed=self._parsed, usage=usage_obj)
+
+
+class _PlannerFakeClient:
+    def __init__(self, responses_stub):
+        self.responses = responses_stub
+
+
+def test_end_to_end_planner_records_tokens_time_and_cost(monkeypatch):
+    monkeypatch.setenv("VISUAL_ASSET_ECONOMY", "true")
+    monkeypatch.setenv("MODEL_PROFILE", "studio")
+    monkeypatch.setenv("OPENAI_TEXT_MODEL", "gpt-baseline")
+    project_state.start_project("proj-e2e")
+
+    scenes = _linear_scenes(5)
+    storyboard = _storyboard(scenes)
+    proposed = VisualAssetPlan(groups=[_group([1]), _group([2, 3]), _group([4]), _group([5])])
+    stub = _PlannerResponsesStub(proposed, input_tokens=1200, output_tokens=400)
+    monkeypatch.setattr(
+        "app.services.openai_client.get_openai_client", lambda: _PlannerFakeClient(stub)
+    )
+
+    plan, meta = plan_visual_assets(storyboard, target_seconds=15)
+
+    assert stub.calls, "the planner never actually called the client"
+    assert meta["planner_enabled"] is True
+    assert meta["planner_model"] == "gpt-baseline"
+    assert meta["planner_input_tokens"] == 1200
+    assert meta["planner_output_tokens"] == 400
+    assert meta["planner_execution_time"] >= 0.0
+    assert meta["planner_disabled_reason"] is None
+    assert [2, 3] in [g.scene_numbers for g in plan.groups]
+
+
+def test_end_to_end_cost_guard_collapses_plan_to_identity(monkeypatch):
+    monkeypatch.setenv("VISUAL_ASSET_ECONOMY", "true")
+    monkeypatch.setenv("MODEL_PROFILE", "studio")
+    monkeypatch.setenv("OPENAI_TEXT_MODEL", "gpt-baseline")
+    # Make the planner call look enormously expensive relative to the tiny
+    # amount of reuse it would unlock -- the guard must reject grouping.
+    monkeypatch.setenv("VISUAL_CONTINUITY_TEXT_PRICE_PER_1M_INPUT_USD", "500000")
+    monkeypatch.setenv("VISUAL_CONTINUITY_TEXT_PRICE_PER_1M_OUTPUT_USD", "500000")
+    project_state.start_project("proj-guard")
+
+    scenes = _linear_scenes(5)
+    storyboard = _storyboard(scenes)
+    proposed = VisualAssetPlan(groups=[_group([1]), _group([2, 3]), _group([4]), _group([5])])
+    stub = _PlannerResponsesStub(proposed, input_tokens=1200, output_tokens=400)
+    monkeypatch.setattr(
+        "app.services.openai_client.get_openai_client", lambda: _PlannerFakeClient(stub)
+    )
+
+    plan, meta = plan_visual_assets(storyboard, target_seconds=15)
+
+    assert meta["planner_disabled_reason"] == "cost_guard_triggered"
+    assert all(len(g.scene_numbers) == 1 for g in plan.groups)
+
+
+# ---------------------------------------------------------------------------
+# v3.1: VISUAL_CONTINUITY_DEBUG
+# ---------------------------------------------------------------------------
+
+
+def test_debug_mode_writes_raw_plan_and_decisions(tmp_path, monkeypatch):
+    monkeypatch.setenv("VISUAL_ASSET_ECONOMY", "true")
+    monkeypatch.setenv("VISUAL_CONTINUITY_DEBUG", "true")
+    monkeypatch.setenv("MODEL_PROFILE", "studio")
+    monkeypatch.setenv("OPENAI_TEXT_MODEL", "gpt-baseline")
+    project_state.start_project("proj-debug")
+
+    scenes = _linear_scenes(4)
+    storyboard = _storyboard(scenes)
+    proposed = VisualAssetPlan(groups=[_group([1]), _group([2, 3]), _group([4])])
+    stub = _PlannerResponsesStub(proposed)
+    monkeypatch.setattr(
+        "app.services.openai_client.get_openai_client", lambda: _PlannerFakeClient(stub)
+    )
+
+    _plan, meta = plan_visual_assets(storyboard, target_seconds=12)
+    assert meta["debug"] is not None
+    assert "raw_plan" in meta["debug"]
+
+    path = save_visual_continuity_debug(tmp_path, meta)
+    assert path is not None
+    assert path.name == "visual-continuity-debug.json"
+    saved = json.loads(path.read_text(encoding="utf-8"))
+    assert saved["raw_plan"]["groups"]
+
+
+def test_debug_mode_disabled_by_default_writes_nothing(tmp_path, monkeypatch):
+    monkeypatch.setenv("VISUAL_ASSET_ECONOMY", "true")
+    monkeypatch.delenv("VISUAL_CONTINUITY_DEBUG", raising=False)
+    monkeypatch.setenv("MODEL_PROFILE", "studio")
+    monkeypatch.setenv("OPENAI_TEXT_MODEL", "gpt-baseline")
+    project_state.start_project("proj-no-debug")
+
+    scenes = _linear_scenes(3)
+    storyboard = _storyboard(scenes)
+    proposed = VisualAssetPlan(groups=[_group([1]), _group([2]), _group([3])])
+    stub = _PlannerResponsesStub(proposed)
+    monkeypatch.setattr(
+        "app.services.openai_client.get_openai_client", lambda: _PlannerFakeClient(stub)
+    )
+
+    _plan, meta = plan_visual_assets(storyboard, target_seconds=9)
+    assert meta["debug"] is None
+    assert save_visual_continuity_debug(tmp_path, meta) is None

@@ -1,12 +1,17 @@
 from __future__ import annotations
 
 import json
+import time
 
+from app.model_router import project_state, usage
+from app.model_router import router as model_router
 from app.model_router.execution import run_agent_stage
 from app.model_router.quality_checks import visual_asset_plan_validator
 from app.model_router.stages import Stage
 from app.visual_continuity import config as vc_config
+from app.visual_continuity import cost_guard
 from app.visual_continuity.models import VisualAssetGroup, VisualAssetPlan
+from app.visual_continuity.repetition import repetition_risk
 from app.visual_continuity.shots import assign_shot_variations
 
 INSTRUCTIONS = """
@@ -117,33 +122,31 @@ def _validate_coverage(plan: VisualAssetPlan, all_numbers: list[int]) -> bool:
 
 def _split_group(
     scene_numbers: list[int],
+    scenes_by_number: dict,
     *,
     hook_number: int,
     ending_number: int,
     max_consecutive_reuse: int,
     min_confidence: float,
     confidence: float,
+    debug_log: list | None = None,
 ) -> list[list[int]]:
     """Split one proposed group into the largest sub-runs that satisfy every
     hard constraint: the hook and ending scenes are always alone, no run
-    exceeds ``max_consecutive_reuse``, a run never skips a scene number, and
-    a below-threshold confidence collapses the whole group to singletons --
-    the "unrelated scenes"/"chapter transition" guarantee (spec: "If reuse
-    reduces educational clarity: Generate a new image") deliberately lives
-    here, not in a location-string comparison.
+    exceeds ``max_consecutive_reuse``, a run never skips a scene number, a
+    below-threshold confidence collapses the whole group to singletons, and
+    a run never continues into a scene that would look "substantially
+    identical" to the previous one even with a different camera treatment
+    (the Visual Repetition Guard -- see app.visual_continuity.repetition).
 
-    An earlier version of this function also hard-split on
-    ``scene.location_id`` changing between consecutive scenes, on the
-    assumption that scenes sharing a Visual Asset Group would share that
-    label. Verified against real produced storyboards and reverted: the
-    storyboard-authoring stage assigns a distinct, highly specific
-    location_id to nearly every scene in practice (not the coarse
-    "primary"/"secondary" its own instructions ask for), so an exact-match
-    requirement rejected well-justified, high-confidence merges of scenes
-    that are genuinely the same visual moment. grouping_confidence -- which
-    the planner is explicitly instructed to lower whenever it is unsure --
-    is the real semantic safety net; MIN_GROUPING_CONFIDENCE is exactly the
-    knob the spec names for this.
+    grouping_confidence -- which the planner is explicitly instructed to
+    lower whenever it is unsure -- is the semantic "same visual moment"
+    safety net (MIN_GROUPING_CONFIDENCE is the knob the spec names for
+    this). An earlier version of this function also hard-split on
+    ``scene.location_id`` changing between consecutive scenes; reverted
+    after real-data testing showed the storyboard-authoring stage assigns a
+    distinct, highly specific location_id to nearly every scene in
+    practice, so exact-match rejected well-justified merges.
     """
 
     if confidence < min_confidence:
@@ -167,7 +170,18 @@ def _split_group(
             continue
 
         non_adjacent = prev_number is not None and number != prev_number + 1
-        if non_adjacent or len(current) >= max_consecutive_reuse:
+        force_new_run = non_adjacent or len(current) >= max_consecutive_reuse
+
+        if not force_new_run and current:
+            risky, reason = repetition_risk(scenes_by_number[current[-1]], scenes_by_number[number])
+            if risky:
+                force_new_run = True
+                if debug_log is not None:
+                    debug_log.append(
+                        {"scenes": [current[-1], number], "decision": "repetition_guard_split", "reason": reason}
+                    )
+
+        if force_new_run:
             close_current()
         current.append(number)
         prev_number = number
@@ -182,9 +196,12 @@ def _enforce_constraints(
     *,
     max_consecutive_reuse: int,
     min_confidence: float,
+    debug_log: list | None = None,
 ) -> VisualAssetPlan:
     all_numbers = [scene.number for scene in storyboard.scenes]
     if not _validate_coverage(raw_plan, all_numbers):
+        if debug_log is not None:
+            debug_log.append({"decision": "identity_fallback", "reason": "raw plan failed coverage validation"})
         return _identity_plan(storyboard)
 
     scenes_by_number = {scene.number: scene for scene in storyboard.scenes}
@@ -196,11 +213,13 @@ def _enforce_constraints(
         scene_numbers = sorted(group.scene_numbers)
         runs = _split_group(
             scene_numbers,
+            scenes_by_number,
             hook_number=hook_number,
             ending_number=ending_number,
             max_consecutive_reuse=max_consecutive_reuse,
             min_confidence=min_confidence,
             confidence=group.grouping_confidence,
+            debug_log=debug_log,
         )
         for run in runs:
             if len(run) > 1:
@@ -244,24 +263,64 @@ def _apply_plan_to_scenes(plan: VisualAssetPlan, storyboard) -> None:
             scene.motion_type = variations[position]
 
 
-def plan_visual_assets(storyboard, *, target_seconds: int) -> VisualAssetPlan:
+def _current_project_id() -> str | None:
+    state = project_state.current()
+    return state.project_id if state else None
+
+
+def _last_usage_record(project_id: str | None):
+    for record in reversed(usage.records_for(project_id)):
+        if record.stage == Stage.VISUAL_CONTINUITY_PLANNER.value:
+            return record
+    return None
+
+
+def _reused_image_count(plan: VisualAssetPlan) -> int:
+    return sum(len(group.scene_numbers) - 1 for group in plan.groups if len(group.scene_numbers) > 1)
+
+
+def _base_meta(*, enabled: bool, model: str | None, disabled_reason: str | None) -> dict:
+    return {
+        "planner_enabled": enabled,
+        "planner_disabled_reason": disabled_reason,
+        "planner_model": model,
+        "planner_input_tokens": None,
+        "planner_output_tokens": None,
+        "planner_execution_time": 0.0,
+        "debug": None,
+    }
+
+
+def plan_visual_assets(storyboard, *, target_seconds: int) -> tuple[VisualAssetPlan, dict]:
     """Build (and apply to ``storyboard`` in place) the Visual Asset
     Economy v3 plan: which scenes share a generated image, each scene's
     resolved image_prompt, and each scene's shot-variation motion_type.
 
-    Safe by construction: disabled, a provider failure, or a structurally
-    unusable model output all degrade to the identity plan (today's
-    unmodified one-image-per-scene behavior) rather than ever risking a
-    broken or lower-quality production.
+    Returns ``(plan, meta)`` -- ``meta`` carries the planner's own
+    execution cost (model, tokens, wall-clock time, and whether/why
+    grouping ended up disabled for this project) so telemetry can answer
+    "did this planner actually save more than it cost?" without a second
+    LLM call.
+
+    Safe by construction: disabled, a provider failure, a structurally
+    unusable model output, or the Planner Cost Guard (grouping not
+    economically worth its own cost) all degrade to the identity plan
+    (today's unmodified one-image-per-scene behavior) rather than ever
+    risking a broken, lower-quality, or money-losing production.
     """
+
+    debug_enabled = vc_config.debug_enabled()
 
     if not vc_config.visual_asset_economy_enabled():
         plan = _identity_plan(storyboard)
         _apply_plan_to_scenes(plan, storyboard)
-        return plan
+        return plan, _base_meta(enabled=False, model=None, disabled_reason="feature_disabled")
 
+    project_id = _current_project_id()
+    attempted_model = model_router.resolve(Stage.VISUAL_CONTINUITY_PLANNER, project_id=project_id).attempted_model
     scene_numbers = [scene.number for scene in storyboard.scenes]
 
+    start = time.monotonic()
     try:
         result = run_agent_stage(
             Stage.VISUAL_CONTINUITY_PLANNER,
@@ -274,19 +333,63 @@ def plan_visual_assets(storyboard, *, target_seconds: int) -> VisualAssetPlan:
         # Planning is an optimization on top of a working pipeline, never a
         # hard dependency -- any failure must degrade to the identity plan,
         # never break or delay production.
+        elapsed = time.monotonic() - start
         plan = _identity_plan(storyboard)
         _apply_plan_to_scenes(plan, storyboard)
-        return plan
+        meta = _base_meta(enabled=True, model=attempted_model, disabled_reason="provider_error")
+        meta["planner_execution_time"] = round(elapsed, 4)
+        return plan, meta
+
+    elapsed = time.monotonic() - start
+    record = _last_usage_record(project_id)
+    meta = _base_meta(enabled=True, model=record.final_model if record else attempted_model, disabled_reason=None)
+    meta["planner_execution_time"] = round(elapsed, 4)
+    meta["planner_input_tokens"] = record.input_tokens if record else None
+    meta["planner_output_tokens"] = record.output_tokens if record else None
+
+    debug_log: list | None = [] if debug_enabled else None
 
     if result.validation is not None and not result.validation.passed:
         plan = _identity_plan(storyboard)
+        meta["planner_disabled_reason"] = "malformed_planner_output"
+        if debug_log is not None:
+            debug_log.append({"decision": "identity_fallback", "reason": "validation failed"})
     else:
+        raw_plan = result.output
         plan = _enforce_constraints(
-            result.output,
+            raw_plan,
             storyboard,
             max_consecutive_reuse=vc_config.max_consecutive_reuse(),
             min_confidence=vc_config.min_grouping_confidence(),
+            debug_log=debug_log,
         )
 
+        guard = cost_guard.evaluate(
+            planner_input_tokens=meta["planner_input_tokens"],
+            planner_output_tokens=meta["planner_output_tokens"],
+            reused_images=_reused_image_count(plan),
+            planner_execution_time=meta["planner_execution_time"],
+        )
+        if guard.should_disable_grouping and _reused_image_count(plan) > 0:
+            meta["planner_disabled_reason"] = (
+                "cost_guard_triggered" if guard.should_disable_for_cost else "cost_guard_time_negative"
+            )
+            if debug_log is not None:
+                debug_log.append(
+                    {
+                        "decision": "cost_guard_disabled_grouping",
+                        "planner_estimated_cost_usd": guard.planner_estimated_cost_usd,
+                        "estimated_image_cost_saved_usd": guard.estimated_image_cost_saved_usd,
+                        "estimated_net_time_saved_seconds": guard.estimated_net_time_saved_seconds,
+                    }
+                )
+            plan = _identity_plan(storyboard)
+
+        if debug_enabled:
+            meta["debug"] = {
+                "raw_plan": raw_plan.model_dump(),
+                "decisions": debug_log or [],
+            }
+
     _apply_plan_to_scenes(plan, storyboard)
-    return plan
+    return plan, meta
